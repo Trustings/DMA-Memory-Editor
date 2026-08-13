@@ -240,7 +240,7 @@ bool InitializeDLL(const std::string process_name, const std::string DLL_Name)
 #endif
 
 #ifdef _WIN32
-bool Initialize(const std::string process_name)
+bool Initialize()
 {
 
     LPCSTR Parameters[] = { "", "-device", "fpga" };
@@ -255,28 +255,9 @@ bool Initialize(const std::string process_name)
 
     printf("[>] Init handle VMM success\n");
 
-
-    process_id = get_process_id(process_name);
-
-    printf("[+] Process id: %d\n", process_id);
-
-    if (!process_id)
-    {
-        printf("[!] Failed to get process id of %s\n", process_name);
-        return false;
-    }
-
-    if (!get_process_base_address(process_name, process_id))
-    {
-        printf("[+] Failed to get base address/size of process 0x%lX (Error: %d)\n", process_base_address, GetLastError());
-        return false;
-    }
-
-    printf("[+] Base address: 0x%llX\n", process_base_address);
-    printf("[+] Image size: 0x%llX\n", process_size);
-
     return true;
 }
+
 
 bool InitializeDLL(const std::string process_name, const std::string DLL_Name)
 {
@@ -320,6 +301,87 @@ bool vmmdll_read(uint64_t address, void* buffer, size_t size) {
 }
 
 #ifdef _WIN32
+
+bool FixCr3_1()
+{
+    PVMMDLL_MAP_MODULEENTRY module_entry;
+    bool result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, (LPSTR)process_name.c_str(), &module_entry, NULL);
+    if (result)
+        return true; //Doesn't need to be patched lol
+
+    if (!VMMDLL_InitializePlugins(hVMM))
+    {
+        ERROR("[-] Failed VMMDLL_InitializePlugins call");
+        return false;
+    }
+
+    //have to sleep a little or we try reading the file before the plugin initializes fully
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    while (true)
+    {
+        BYTE bytes[4] = { 0 };
+        DWORD i = 0;
+        auto nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\progress_percent.txt", bytes, 3, &i, 0);
+        if (nt == VMMDLL_STATUS_SUCCESS && atoi((LPSTR)bytes) == 100)
+            break;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    VMMDLL_VFS_FILELIST2 VfsFileList;
+    VfsFileList.dwVersion = VMMDLL_VFS_FILELIST_VERSION;
+    VfsFileList.h = 0;
+    VfsFileList.pfnAddDirectory = 0;
+    VfsFileList.pfnAddFile = cbAddFile; //dumb af callback who made this system
+
+    result = VMMDLL_VfsListU(hVMM, (LPSTR)"\\misc\\procinfo\\", &VfsFileList);
+    if (!result)
+        return false;
+
+    //read the data from the txt and parse it
+    const size_t buffer_size = cbSize;
+    std::unique_ptr<BYTE[]> bytes(new BYTE[buffer_size]);
+    DWORD j = 0;
+    auto nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\dtb.txt", bytes.get(), buffer_size - 1, &j, 0);
+    if (nt != VMMDLL_STATUS_SUCCESS)
+        return false;
+
+    std::vector<uint64_t> possible_dtbs;
+    std::string lines(reinterpret_cast<char*>(bytes.get()));
+    std::istringstream iss(lines);
+    std::string line;
+
+    while (std::getline(iss, line))
+    {
+        Info info = { };
+
+        std::istringstream info_ss(line);
+        if (info_ss >> std::hex >> info.index >> std::dec >> info.process_id >> std::hex >> info.dtb >> info.kernelAddr >> info.name)
+        {
+            if (info.process_id == 0) //parts that lack a name or have a NULL pid are suspects
+                possible_dtbs.push_back(info.dtb);
+            if (process_name.find(info.name) != std::string::npos)
+                possible_dtbs.push_back(info.dtb);
+        }
+    }
+
+    //loop over possible dtbs and set the config to use it til we find the correct one
+    for (size_t i = 0; i < possible_dtbs.size(); i++)
+    {
+        auto dtb = possible_dtbs[i];
+        VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_PROCESS_DTB | process_id, dtb);
+        result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, (LPSTR)process_name.c_str(), &module_entry, NULL);
+        if (result)
+        {
+            printf("Patched DTB");
+            return true;
+        }
+    }
+
+    ERROR("[-] Failed to patch module");
+    return false;
+}
 
 #endif
 
@@ -365,6 +427,7 @@ uint32_t get_process_id(const std::string process_name)
     return dwPID;
 }
 
+#ifdef LINUX
 static void force_unmount(const std::string& mountPoint = "/mnt/memproc") {
     // Try umount first
     int result = umount(mountPoint.c_str());
@@ -446,19 +509,19 @@ static bool init_memprocfs(const std::string& qmpSocket = "/tmp/qmp-win10-1.sock
         static char dir_buffer[PATH_MAX];
         static char* active_build_directory;
 
-        getcwd(char_buff,sizeof(char_buff));
+        getcwd(char_buff, sizeof(char_buff));
         sprintf(dir_buffer, "%s/memprocfs", char_buff);
 
         active_build_directory = dir_buffer;
 
         execlp(active_build_directory,
-               "memprocfs",
-               "-device",
-               url.c_str(),
-               "-mount",
-               "/mnt/memproc",
-               "-v",
-               NULL);
+            "memprocfs",
+            "-device",
+            url.c_str(),
+            "-mount",
+            "/mnt/memproc",
+            "-v",
+            NULL);
 
         // If we get here, execlp failed
         std::cerr << "Failed to execute memprocfs: " << strerror(errno) << std::endl;
@@ -475,7 +538,8 @@ static bool init_memprocfs(const std::string& qmpSocket = "/tmp/qmp-win10-1.sock
     if (kill(childPid, 0) == 0) {
         std::cout << "[+] memprocfs launched successfully with PID: " << childPid << std::endl;
         return true;
-    } else {
+    }
+    else {
         std::cerr << "[!] memprocfs terminated during startup" << std::endl;
         g_memprocPid = -1;
         return false;
@@ -498,7 +562,8 @@ static void terminate_memprocfs() {
         // Try lazy unmount
         umount2("/mnt/memproc", MNT_DETACH);
         std::cout << "[+] Used lazy unmount" << std::endl;
-    } else {
+    }
+    else {
         std::cout << "[+] Unmounted successfully" << std::endl;
     }
 
@@ -522,7 +587,8 @@ static void terminate_memprocfs() {
             waitpid(g_memprocPid, &status, 0);
             std::cout << "[+] memprocfs force killed" << std::endl;
         }
-    } else {
+    }
+    else {
         // Process doesn't exist anymore
         std::cerr << "[+] memprocfs already terminated" << std::endl;
     }
@@ -532,7 +598,6 @@ static void terminate_memprocfs() {
 
     g_memprocPid = -1;
 }
-
 
 bool FixCr3_1()
 {
@@ -565,7 +630,7 @@ bool FixCr3_1()
         FILE* progress_file = fopen("/mnt/memproc/misc/procinfo/progress_percent.txt", "r");
         if (progress_file)
         {
-            char bytes[16] = {0};
+            char bytes[16] = { 0 };
             if (fread(bytes, 1, 15, progress_file) > 0 && atoi(bytes) >= 100)
             {
                 fclose(progress_file);
@@ -597,12 +662,12 @@ bool FixCr3_1()
         if (strlen(line) == 0) continue;
 
         Info info = {};
-        char name_buf[256] = {0};
+        char name_buf[256] = { 0 };
 
         if (sscanf(line, "%x %d %llx %llx %255[^\n]",
-                   &info.index, &info.process_id,
-                   &info.dtb, &info.kernelAddr,
-                   name_buf) >= 4)
+            &info.index, &info.process_id,
+            &info.dtb, &info.kernelAddr,
+            name_buf) >= 4)
         {
             strncpy(info.name, name_buf, sizeof(info.name) - 1);
             info.name[sizeof(info.name) - 1] = '\0';
@@ -616,7 +681,7 @@ bool FixCr3_1()
             // Check if name matches our process
             if (strlen(name_buf) > 0 &&
                 (process_name.find(name_buf) != std::string::npos ||
-                 strcasestr(name_buf, process_name.c_str()) != NULL))
+                    strcasestr(name_buf, process_name.c_str()) != NULL))
             {
                 possible_dtbs.push_back(info.dtb);
                 printf("[DBG] Name match DTB (%s): 0x%llX\n", name_buf, info.dtb);
@@ -660,6 +725,7 @@ bool FixCr3_1()
     terminate_memprocfs();
     return false;
 }
+#endif
 
 bool get_process_base_address(const std::string process_name, const uint32_t& process_id)
 {
@@ -905,445 +971,6 @@ std::vector<int> GetPidListFromName(std::string name)
 }
 
 #ifdef _WIN32
-
-bool DumpExe() {
-    printf("[>] Creating memory-formatted executable dump...\n");
-
-    if (!process_id || !process_base_address || !process_size)
-    {
-        printf("[!] Memory is not initialized.\n");
-        return false;
-    }
-
-    printf("[>] Reading 0x%X bytes from 0x%llX...\n",
-           process_size, process_base_address);
-
-    std::vector<BYTE> memory_buffer(process_size);
-    DWORD total_read = 0;
-
-    // Read memory in chunks
-    for (DWORD offset = 0; offset < process_size; offset += 0x1000)
-    {
-        DWORD to_read = (0x1000UL < (process_size - offset)) ? 0x1000UL : (process_size - offset);
-        DWORD chunk_read = 0;
-
-        VMMDLL_MemReadEx(hVMM, process_id, process_base_address + offset,
-                         memory_buffer.data() + offset, to_read, &chunk_read,
-                         VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-        total_read += chunk_read;
-    }
-
-    printf("[+] Read 0x%X bytes from memory\n", total_read);
-
-    PIMAGE_DOS_HEADER pdos_header = (PIMAGE_DOS_HEADER)memory_buffer.data();
-
-    if (pdos_header->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        printf("[!] Invalid DOS header (0x%04X)\n", pdos_header->e_magic);
-        return false;
-    }
-
-    printf("[+] DOS header valid (MZ)\n");
-    printf("[+] e_lfanew: 0x%X\n", pdos_header->e_lfanew);
-
-    if (pdos_header->e_lfanew >= memory_buffer.size() - sizeof(DWORD))
-    {
-        printf("[!] e_lfanew out of bounds\n");
-        return false;
-    }
-
-    PIMAGE_NT_HEADERS_WIN_UNION pnt_union = (PIMAGE_NT_HEADERS_WIN_UNION)
-        (memory_buffer.data() + pdos_header->e_lfanew);
-
-    if (pnt_union->Signature != IMAGE_NT_SIGNATURE)
-    {
-        printf("[!] Invalid PE signature (0x%08X)\n", pnt_union->Signature);
-        return false;
-    }
-
-    printf("[+] PE signature valid\n");
-
-    // Check architecture using your union type
-    PIMAGE_OPTIONAL_HEADER_WIN_UNION popt_union = (PIMAGE_OPTIONAL_HEADER_WIN_UNION)
-        ((BYTE*)pnt_union + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER));
-
-    bool is_64bit = (popt_union->OptionalHeader32.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-
-    printf("[+] Architecture: %s-bit\n", is_64bit ? "64" : "32");
-
-    DWORD size_of_image = 0;
-    DWORD size_of_headers = 0;
-    WORD number_of_sections = 0;
-
-    if (is_64bit)
-    {
-        size_of_image = pnt_union->Headers64.OptionalHeader.SizeOfImage;
-        size_of_headers = pnt_union->Headers64.OptionalHeader.SizeOfHeaders;
-        number_of_sections = pnt_union->Headers64.FileHeader.NumberOfSections;
-    }
-    else
-    {
-        size_of_image = pnt_union->Headers32.OptionalHeader.SizeOfImage;
-        size_of_headers = pnt_union->Headers32.OptionalHeader.SizeOfHeaders;
-        number_of_sections = pnt_union->Headers32.FileHeader.NumberOfSections;
-    }
-
-    printf("[+] Original SizeOfImage: 0x%X\n", size_of_image);
-    printf("[+] SizeOfHeaders: 0x%X\n", size_of_headers);
-    printf("[+] Number of sections: %d\n", number_of_sections);
-
-    // Get first section header using your macros
-    PIMAGE_SECTION_HEADER first_section = NULL;
-
-    if (is_64bit)
-    {
-        first_section = (PIMAGE_SECTION_HEADER)((ULONG_PTR)&pnt_union->Headers64 +
-                                                 sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
-                                                 pnt_union->Headers64.FileHeader.SizeOfOptionalHeader);
-    }
-    else
-    {
-        first_section = (PIMAGE_SECTION_HEADER)((ULONG_PTR)&pnt_union->Headers32 +
-                                                 sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
-                                                 pnt_union->Headers32.FileHeader.SizeOfOptionalHeader);
-    }
-
-    // Fix section headers to point to memory layout
-    for (WORD i = 0; i < number_of_sections; i++)
-    {
-        PIMAGE_SECTION_HEADER section = &first_section[i];
-
-        printf("[+] Section %d: ", i + 1);
-        // Print section name safely
-        for (int j = 0; j < 8 && section->Name[j] != 0; j++) {
-            printf("%c", section->Name[j]);
-        }
-        printf("\n");
-
-        printf("    VirtualAddress:   0x%08X\n", section->VirtualAddress);
-        printf("    VirtualSize:      0x%08X\n", section->Misc.VirtualSize);
-        printf("    SizeOfRawData:    0x%08X", section->SizeOfRawData);
-
-        // Ensure SizeOfRawData is at least VirtualSize
-        if (section->SizeOfRawData < section->Misc.VirtualSize)
-        {
-            section->SizeOfRawData = section->Misc.VirtualSize;
-            printf(" -> 0x%08X", section->SizeOfRawData);
-        }
-        printf("\n");
-
-        printf("    PointerToRawData: 0x%08X", section->PointerToRawData);
-
-        // Set file offset to match memory offset
-        section->PointerToRawData = section->VirtualAddress;
-
-        printf(" -> 0x%08X\n", section->PointerToRawData);
-    }
-
-    // Update SizeOfImage to actual memory size
-    if (is_64bit)
-    {
-        pnt_union->Headers64.OptionalHeader.SizeOfImage = process_size;
-        pnt_union->Headers64.OptionalHeader.CheckSum = 0; // Clear checksum
-    }
-    else
-    {
-        pnt_union->Headers32.OptionalHeader.SizeOfImage = process_size;
-        pnt_union->Headers32.OptionalHeader.CheckSum = 0;
-    }
-
-    printf("[+] Updated SizeOfImage: 0x%X -> 0x%X\n", size_of_image, process_size);
-
-    char filename[MAX_PATH];
-    const char* arch_suffix = is_64bit ? "x64_memdump" : "x86_memdump";
-
-    sprintf_s(filename, MAX_PATH, "%s_%s.exe", process_name.c_str(), arch_suffix);
-
-    printf("\n[>] Saving memory-formatted executable to %s...\n", filename);
-
-    HANDLE hFile = CreateFileA(filename, GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-    if (hFile == INVALID_HANDLE_VALUE)
-    {
-        printf("[!] Failed to create file (Error: %d)\n", GetLastError());
-        return false;
-    }
-
-    DWORD bytes_written = 0;
-    WriteFile(hFile, memory_buffer.data(), (DWORD)memory_buffer.size(), &bytes_written, NULL);
-    CloseHandle(hFile);
-
-    printf("[+] Saved: %lu bytes (0x%lX)\n", bytes_written, bytes_written);
-
-    printf("\n[>] Verifying memory dump...\n");
-
-    FILE* verify_file = fopen(filename, "rb");
-    if (verify_file)
-    {
-        BYTE header_check[0x400];
-        size_t bytes_read = fread(header_check, 1, sizeof(header_check), verify_file);
-        fclose(verify_file);
-
-        if (bytes_read >= sizeof(IMAGE_DOS_HEADER))
-        {
-            PIMAGE_DOS_HEADER check_dos = (PIMAGE_DOS_HEADER)header_check;
-
-            if (check_dos->e_magic == IMAGE_DOS_SIGNATURE)
-            {
-                printf("[+] DOS header: OK\n");
-
-                if (check_dos->e_lfanew < bytes_read - sizeof(DWORD))
-                {
-                    DWORD* pe_sig = (DWORD*)(header_check + check_dos->e_lfanew);
-
-                    if (*pe_sig == IMAGE_NT_SIGNATURE)
-                    {
-                        printf("[+] PE signature: OK\n");
-                        printf("[+] Memory dump appears valid!\n");
-                    }
-                }
-            }
-        }
-    }
-
-    printf("\n[+] MEMORY DUMP COMPLETE\n");
-    printf("    File: %s\n", filename);
-    printf("    Size: %lu bytes (full memory image)\n", bytes_written);
-    printf("    Layout: Memory layout preserved\n");
-    printf("    State: Live memory state retained\n");
-    printf("    Note: This is a memory dump formatted as an executable\n");
-
-    return true;
-}
-
-bool DumpDLL()
-{
-    printf("[>] Creating memory-formatted DLL dump...\n");
-
-    if (!process_id || !DLL_base_address || !DLL_size)
-    {
-        printf("[!] DLL memory is not initialized.\n");
-        return false;
-    }
-
-    printf("[>] Reading 0x%X bytes from DLL at 0x%llX...\n",
-           DLL_size, DLL_base_address);
-
-    std::vector<BYTE> memory_buffer(DLL_size);
-    DWORD total_read = 0;
-
-    for (DWORD offset = 0; offset < DLL_size; offset += 0x1000)
-    {
-        DWORD to_read = (0x1000UL < (DLL_size - offset)) ? 0x1000UL : (DLL_size - offset);
-        DWORD chunk_read = 0;
-
-        VMMDLL_MemReadEx(hVMM, process_id, DLL_base_address + offset,
-                         memory_buffer.data() + offset, to_read, &chunk_read,
-                         VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-        total_read += chunk_read;
-    }
-
-    printf("[+] Read 0x%X bytes from DLL memory\n", total_read);
-
-    PIMAGE_DOS_HEADER pdos_header = (PIMAGE_DOS_HEADER)memory_buffer.data();
-
-    if (pdos_header->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        printf("[!] Invalid DLL DOS header (0x%04X)\n", pdos_header->e_magic);
-        return false;
-    }
-
-    printf("[+] DLL DOS header valid\n");
-    printf("[+] e_lfanew: 0x%X\n", pdos_header->e_lfanew);
-
-    if (pdos_header->e_lfanew >= memory_buffer.size() - sizeof(DWORD))
-    {
-        printf("[!] e_lfanew out of bounds\n");
-        return false;
-    }
-
-    PIMAGE_NT_HEADERS_WIN_UNION pnt_union = (PIMAGE_NT_HEADERS_WIN_UNION)
-        (memory_buffer.data() + pdos_header->e_lfanew);
-
-    if (pnt_union->Signature != IMAGE_NT_SIGNATURE)
-    {
-        printf("[!] Invalid DLL PE signature (0x%08X)\n", pnt_union->Signature);
-        return false;
-    }
-
-    printf("[+] DLL PE signature valid\n");
-
-    // Check architecture
-    PIMAGE_OPTIONAL_HEADER_WIN_UNION popt_union = (PIMAGE_OPTIONAL_HEADER_WIN_UNION)
-        ((BYTE*)pnt_union + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER));
-
-    bool is_64bit = (popt_union->OptionalHeader32.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC);
-
-    printf("[+] Architecture: %s-bit\n", is_64bit ? "64" : "32");
-
-    // Check DLL characteristics
-    WORD characteristics = is_64bit ?
-                               pnt_union->Headers64.FileHeader.Characteristics :
-                               pnt_union->Headers32.FileHeader.Characteristics;
-
-    bool is_dll = (characteristics & IMAGE_FILE_DLL) != 0;
-    printf("[+] DLL flag: %s\n", is_dll ? "YES (valid DLL)" : "NO (may be memory region)");
-
-    WORD number_of_sections = is_64bit ?
-                                  pnt_union->Headers64.FileHeader.NumberOfSections :
-                                  pnt_union->Headers32.FileHeader.NumberOfSections;
-
-    printf("[+] Number of sections: %d\n", number_of_sections);
-
-    // Get first section header
-    PIMAGE_SECTION_HEADER first_section = NULL;
-
-    if (is_64bit)
-    {
-        first_section = (PIMAGE_SECTION_HEADER)((ULONG_PTR)&pnt_union->Headers64 +
-                                                 sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
-                                                 pnt_union->Headers64.FileHeader.SizeOfOptionalHeader);
-    }
-    else
-    {
-        first_section = (PIMAGE_SECTION_HEADER)((ULONG_PTR)&pnt_union->Headers32 +
-                                                 sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) +
-                                                 pnt_union->Headers32.FileHeader.SizeOfOptionalHeader);
-    }
-
-    // Update section headers for memory layout
-    for (WORD i = 0; i < number_of_sections; i++)
-    {
-        PIMAGE_SECTION_HEADER section = &first_section[i];
-
-        printf("[+] Section %d: ", i + 1);
-        // Print section name safely
-        for (int j = 0; j < 8 && section->Name[j] != 0; j++) {
-            printf("%c", section->Name[j]);
-        }
-        printf("\n");
-
-        // Ensure SizeOfRawData is sufficient
-        if (section->SizeOfRawData < section->Misc.VirtualSize)
-        {
-            section->SizeOfRawData = section->Misc.VirtualSize;
-        }
-
-        // Set file offset to match memory offset
-        section->PointerToRawData = section->VirtualAddress;
-
-        // Check for important DLL sections
-        bool is_export = false;
-        bool is_reloc = false;
-        for (int j = 0; j < 8; j++) {
-            if (section->Name[j] == '.') {
-                if (j < 7 && section->Name[j + 1] == 'e' && section->Name[j + 2] == 'd' && section->Name[j + 3] == 'a') {
-                    is_export = true;
-                }
-                else if (j < 7 && section->Name[j + 1] == 'r' && section->Name[j + 2] == 'e' && section->Name[j + 3] == 'l') {
-                    is_reloc = true;
-                }
-            }
-        }
-
-        if (is_export) printf("    [*] Export section\n");
-        if (is_reloc) printf("    [*] Relocation section\n");
-    }
-
-    if (is_64bit)
-    {
-        pnt_union->Headers64.OptionalHeader.SizeOfImage = DLL_size;
-        pnt_union->Headers64.OptionalHeader.CheckSum = 0;
-
-        // Ensure DLL flag is set
-        if (!is_dll)
-        {
-            pnt_union->Headers64.FileHeader.Characteristics |= IMAGE_FILE_DLL;
-            printf("[+] Added DLL characteristics flag\n");
-        }
-    }
-    else
-    {
-        pnt_union->Headers32.OptionalHeader.SizeOfImage = DLL_size;
-           -l:libZydis.apnt_union->Headers32.OptionalHeader.CheckSum = 0;
-
-        if (!is_dll)
-        {
-            pnt_union->Headers32.FileHeader.Characteristics |= IMAGE_FILE_DLL;
-            printf("[+] Added DLL characteristics flag\n");
-        }
-    }
-
-    char filename[MAX_PATH];
-    const char* arch_suffix = is_64bit ? "x64_memdump" : "x86_memdump";
-
-    sprintf_s(filename, MAX_PATH, "%s_%s.dll", DLL_Name.c_str(), arch_suffix);
-
-    printf("\n[>] Saving memory-formatted DLL to %s...\n", filename);
-
-    HANDLE hFile = CreateFileA(filename, GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-    if (hFile == INVALID_HANDLE_VALUE)
-    {
-        printf("[!] Failed to create DLL file (Error: %d)\n", GetLastError());
-        return false;
-    }
-
-    DWORD bytes_written = 0;
-    WriteFile(hFile, memory_buffer.data(), (DWORD)memory_buffer.size(), &bytes_written, NULL);
-    CloseHandle(hFile);
-
-    printf("[+] Saved: %lu bytes (0x%lX)\n", bytes_written, bytes_written);
-
-    printf("\n[>] Verifying DLL memory dump...\n");
-
-    FILE* verify_file = fopen(filename, "rb");
-    if (verify_file)
-    {
-        BYTE header_check[0x400];
-        size_t bytes_read = fread(header_check, 1, sizeof(header_check), verify_file);
-        fclose(verify_file);
-
-        if (bytes_read >= sizeof(IMAGE_DOS_HEADER))
-        {
-            PIMAGE_DOS_HEADER check_dos = (PIMAGE_DOS_HEADER)header_check;
-
-            if (check_dos->e_magic == IMAGE_DOS_SIGNATURE)
-            {
-                printf("[+] DOS header: OK\n");
-
-                if (check_dos->e_lfanew < bytes_read - sizeof(DWORD))
-                {
-                    DWORD* pe_sig = (DWORD*)(header_check + check_dos->e_lfanew);
-
-                    if (*pe_sig == IMAGE_NT_SIGNATURE)
-                    {
-                        printf("[+] PE signature: OK\n");
-
-                        // Check DLL flag
-                        PIMAGE_FILE_HEADER file_header = (PIMAGE_FILE_HEADER)((BYTE*)pe_sig + sizeof(DWORD));
-                        if (file_header->Characteristics & IMAGE_FILE_DLL)
-                        {
-                            printf("[+] DLL flag: YES\n");
-                        }
-                        printf("[+] Memory dump appears valid!\n");
-                    }
-                }
-            }
-        }
-    }
-
-    printf("\n[+] DLL MEMORY DUMP COMPLETE\n");
-    printf("    File: %s\n", filename);
-    printf("    Size: %lu bytes (full DLL memory image)\n", bytes_written);
-    printf("    Layout: Memory layout preserved\n");
-    printf("    State: Live memory state retained\n");
-    printf("    Note: This is a memory dump formatted as a DLL\n");
-
-    return true;
-}
 
 #endif
 

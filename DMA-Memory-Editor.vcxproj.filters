@@ -1,0 +1,130 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="core">
+      <UniqueIdentifier>{29fbbf49-f092-46c7-8897-e1ff388a30b0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="gui">
+      <UniqueIdentifier>{c11bf8e1-611c-4c9c-a678-e869aaa5d80d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include">
+      <UniqueIdentifier>{7da19d61-7c8f-4233-a182-a1c78ffeaeea}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="memory">
+      <UniqueIdentifier>{d39f2be9-5ad8-4eb7-8802-f3ac6cf8adb1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="gui\imgui">
+      <UniqueIdentifier>{93fa13b1-eb47-4012-8352-994d60ff6519}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="gui\render">
+      <UniqueIdentifier>{229f16a9-d254-4010-8809-de541778bab5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="memory\list">
+      <UniqueIdentifier>{635a0f13-b7d4-4451-aac6-c0c9d9bfe0a5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="memory\region">
+      <UniqueIdentifier>{8d38962d-e4ad-4b34-809e-37f61b0a2889}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="memory\search">
+      <UniqueIdentifier>{250e010f-2b24-48f8-bd09-0570b8472c96}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="core\core.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui_demo.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui_draw.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui_impl_glfw.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui_impl_vulkan.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui_tables.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\imgui\imgui_widgets.cpp">
+      <Filter>gui\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="gui\render\render.cpp">
+      <Filter>gui\render</Filter>
+    </ClCompile>
+    <ClCompile Include="memory\memory.cpp">
+      <Filter>memory</Filter>
+    </ClCompile>
+    <ClCompile Include="memory\list\list.cpp">
+      <Filter>memory\list</Filter>
+    </ClCompile>
+    <ClCompile Include="memory\search\search.cpp">
+      <Filter>memory\search</Filter>
+    </ClCompile>
+    <ClCompile Include="memory\region\region.cpp">
+      <Filter>memory\region</Filter>
+    </ClCompile>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="gui\menu.cpp">
+      <Filter>gui</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="core\core.hpp">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imconfig.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imgui.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imgui_impl_glfw.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imgui_impl_vulkan.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imgui_internal.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imstb_rectpack.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imstb_textedit.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\imgui\imstb_truetype.h">
+      <Filter>gui\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\render\render.hpp">
+      <Filter>gui\render</Filter>
+    </ClInclude>
+    <ClInclude Include="include\leechcore.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\vmmdll.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="memory\memory.hpp">
+      <Filter>memory</Filter>
+    </ClInclude>
+    <ClInclude Include="memory\list\list.hpp">
+      <Filter>memory\list</Filter>
+    </ClInclude>
+    <ClInclude Include="memory\search\search.hpp">
+      <Filter>memory\search</Filter>
+    </ClInclude>
+    <ClInclude Include="memory\region\region.hpp">
+      <Filter>memory\region</Filter>
+    </ClInclude>
+    <ClInclude Include="gui\menu.hpp">
+      <Filter>gui</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

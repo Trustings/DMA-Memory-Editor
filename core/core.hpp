@@ -1,11 +1,18 @@
 #pragma once
-#include <pthread.h>
+#ifdef _WIN32
+#include <Windows.h>
+#define HAVE_STRUCT_TIMESPEC
+#endif
+
+#ifdef __linux__
+#include "debugger.hpp"
+#endif
+
 #include "memory.hpp"
 #include <stdbool.h>
 #include "menu.hpp"
-#include "debugger.hpp"
-
 #include <stdatomic.h>
+#include <pthread.h>
 
 
 #ifdef __cplusplus

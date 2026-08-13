@@ -100,7 +100,9 @@ void MemorySearch_FirstScan(DWORD pid) {
 
             if (vmmdll_read(currentAddr, buffer.data(), bytesToRead)) {
                 // Scan each position
+                #ifdef __linux__
                 start_mutex_lock();
+                #endif
 
                 for (DWORD i = 0; i + (DWORD)typeSize <= bytesToRead; i += g_currentOptions.alignment) {
                     if (ValueMatches(&buffer[i], g_currentOptions.type, g_currentOptions)) {
@@ -115,8 +117,9 @@ void MemorySearch_FirstScan(DWORD pid) {
                         resultsFound++;
                     }
                 }
-                
+                #ifdef __linux__
                 end_mutex_lock();
+                #endif
             } else {
                 // Chunk failed to read (unmapped/guarded mid-region, transient
                 // DMA glitch, etc.) — skip it rather than aborting the whole scan.

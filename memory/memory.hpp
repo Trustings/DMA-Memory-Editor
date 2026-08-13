@@ -22,6 +22,9 @@ typedef union _IMAGE_OPTIONAL_HEADER_WIN_UNION {
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
+#include <sys/wait.h>
+#include "sys/mount.h"
 #endif
 
 #include <string.h>
@@ -30,16 +33,12 @@ typedef union _IMAGE_OPTIONAL_HEADER_WIN_UNION {
 #include <fstream>
 #include <chrono>
 #include <string>
-#include <dirent.h>
 #include <thread>
 #include <mutex>
 #include "vmmdll.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
-
-#include <sys/wait.h>
-#include "sys/mount.h"
 
 extern uint32_t pid;
 extern uint64_t gafAsyncKeyStateExport;

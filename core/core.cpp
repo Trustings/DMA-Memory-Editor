@@ -16,6 +16,7 @@ struct state1 state1_s = {.State1End = false,
                           .strtol_result = 0,
                           .wp_loop_completed = false};
 
+#ifdef __linux__
 static int wp_helper(uint64_t addr){
     for (int i = 0; i < watchpoint_count; i++){
         if (wp_buffer[i] == addr){
@@ -34,6 +35,7 @@ static int wp_helper(uint64_t addr){
     return -1;
 
 }
+#endif
 
 void* sync_operations(void* arg){
 
@@ -94,6 +96,7 @@ void* sync_operations(void* arg){
 
             }
 
+            #ifdef __linux
             if(state1_s.FindAccessesesClicked && !state1_s.wp_loop_completed){
 
                 if(gdb_state_c.gdb_start_init){
@@ -168,6 +171,7 @@ void* sync_operations(void* arg){
                 }
 
             }
+            #endif
 
         }
     }

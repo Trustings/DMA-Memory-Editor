@@ -5,6 +5,7 @@ std::string ProtectToString(uint32_t protect) {
     std::string result;
 
     // Memory protection constants from Windows
+    #ifdef __linux__
     const uint32_t PAGE_NOACCESS = 0x01;
     const uint32_t PAGE_READONLY = 0x02;
     const uint32_t PAGE_READWRITE = 0x04;
@@ -16,6 +17,7 @@ std::string ProtectToString(uint32_t protect) {
     const uint32_t PAGE_GUARD = 0x100;
     const uint32_t PAGE_NOCACHE = 0x200;
     const uint32_t PAGE_WRITECOMBINE = 0x400;
+    #endif
 
     if (protect & PAGE_NOACCESS) result += "NOACCESS ";
     if (protect & PAGE_READONLY) result += "R ";

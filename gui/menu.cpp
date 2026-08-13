@@ -402,9 +402,10 @@ void CopyToClipboard(const char* text) {
             if (ImGui::Button("Copy All Page Addresses")) {
                 std::string allAddresses;
                 size_t startIdx = state1_s.currentPage * resultsPerPage;
-                size_t endIdx = std::min(startIdx + resultsPerPage, g_searchResults.size());
-
+                size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
+                #ifdef __linux__
                 start_mutex_lock();
+                #endif
 
                 for (size_t i = startIdx; i < endIdx; i++) {
                     if (!showWatchedOnly || g_searchResults[i].watched) {
@@ -413,8 +414,9 @@ void CopyToClipboard(const char* text) {
                         allAddresses += addrStr;
                     }
                 }
-
+                #ifdef __linux__
                 end_mutex_lock();
+                #endif  
 
                 if (!allAddresses.empty()) {
                     ImGui::SetClipboardText(allAddresses.c_str());
@@ -475,7 +477,7 @@ void CopyToClipboard(const char* text) {
                 // Calculate pagination range
                 if (g_searchResults.size() > 0) {
                     size_t startIdx = state1_s.currentPage * resultsPerPage;
-                    size_t endIdx = std::min(startIdx + resultsPerPage, g_searchResults.size());
+                    size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
 
                     // Display only current page results
                     for (size_t i = startIdx; i < endIdx; i++) {
@@ -499,6 +501,7 @@ void CopyToClipboard(const char* text) {
                             ImGui::OpenPopup("AddressContextMenu");
                         }
 
+                        #ifdef __linux__       
                         if (ImGui::BeginPopup("AddressContextMenu")) {
                             if (ImGui::MenuItem("Find what accesses this address")){
 
@@ -543,14 +546,17 @@ void CopyToClipboard(const char* text) {
 
                             }
                             ImGui::EndPopup();
-                        }
+                     } 
+                        #endif 
 
                         // ===== END MODIFIED SECTION =====
 
                         ImGui::NextColumn();
 
                         // Current value
+                        #ifdef __linux__
                         start_mutex_lock();
+                        #endif
 
                         if (!g_searchResults[i].currentValue.empty()) {
                             switch(selectedType) {
@@ -562,8 +568,9 @@ void CopyToClipboard(const char* text) {
                             case 5: ImGui::Text("%.6f", *reinterpret_cast<double*>(g_searchResults[i].currentValue.data())); break;
                             default: ImGui::Text("---");
                             }
-
+                            #ifdef __linux__
                             end_mutex_lock();
+                            #endif
                         } else {
                             ImGui::Text("---");
                         }
@@ -616,6 +623,8 @@ void CopyToClipboard(const char* text) {
             }
             ImGui::EndChild();
             }
+
+            #ifdef __linux__
 
             if (state1_s.FindAccessesesClicked) {
 
@@ -695,11 +704,14 @@ void CopyToClipboard(const char* text) {
 
                     ImGui::PopID();
                 }
+     
 
             }
 
             ImGui::EndChild();
             }
+
+            #endif
 
             // Edit section for selected result
             if (selectedResult >= 0 && selectedResult < (int)g_searchResults.size()) {

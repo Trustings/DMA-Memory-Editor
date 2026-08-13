@@ -15,14 +15,6 @@ int main()
 
     Initialize();
 
-    /*
-    while (true) {
-        printf("testing\n");
-\
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Prints every second
-    }
-    */
-
     if (!(Render::InitVulkan()))
     {
         printf("Failed to init Vulkan!\n");
