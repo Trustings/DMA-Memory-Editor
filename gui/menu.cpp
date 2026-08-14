@@ -403,9 +403,8 @@ void CopyToClipboard(const char* text) {
                 std::string allAddresses;
                 size_t startIdx = state1_s.currentPage * resultsPerPage;
                 size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
-                #ifdef __linux__
-                start_mutex_lock();
-                #endif
+
+                static int result = start_mutex_lock();
 
                 for (size_t i = startIdx; i < endIdx; i++) {
                     if (!showWatchedOnly || g_searchResults[i].watched) {
@@ -414,10 +413,11 @@ void CopyToClipboard(const char* text) {
                         allAddresses += addrStr;
                     }
                 }
-                #ifdef __linux__
-                end_mutex_lock();
-                #endif  
 
+                if (result == 0) {
+                end_mutex_lock();
+                }
+                
                 if (!allAddresses.empty()) {
                     ImGui::SetClipboardText(allAddresses.c_str());
                 }
@@ -554,12 +554,11 @@ void CopyToClipboard(const char* text) {
                         ImGui::NextColumn();
 
                         // Current value
-                        #ifdef __linux__
-                        start_mutex_lock();
-                        #endif
 
+                        static int result = start_mutex_lock();
+                 
                         if (!g_searchResults[i].currentValue.empty()) {
-                            switch(selectedType) {
+                            switch (selectedType) {
                             case 0: ImGui::Text("%u", *reinterpret_cast<uint8_t*>(g_searchResults[i].currentValue.data())); break;
                             case 1: ImGui::Text("%u", *reinterpret_cast<uint16_t*>(g_searchResults[i].currentValue.data())); break;
                             case 2: ImGui::Text("%lu", *reinterpret_cast<uint32_t*>(g_searchResults[i].currentValue.data())); break;
@@ -568,9 +567,11 @@ void CopyToClipboard(const char* text) {
                             case 5: ImGui::Text("%.6f", *reinterpret_cast<double*>(g_searchResults[i].currentValue.data())); break;
                             default: ImGui::Text("---");
                             }
-                            #ifdef __linux__
+
+                            if (result == 0) {
                             end_mutex_lock();
-                            #endif
+                            }
+                            
                         } else {
                             ImGui::Text("---");
                         }
