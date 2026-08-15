@@ -5,7 +5,7 @@ DMA-Memory-Editor is a x64dbg inspired DMA memory editor capable of inspecting a
 <img width="1920" height="1080" alt="Screenshot From 2026-08-15 15-58-10" src="https://github.com/user-attachments/assets/469211e4-9f8d-473e-b0a2-8288ab43d9b2" />
 
 # Features
-  v1.0.0
+  [v1.0.0](https://github.com/Trustings/DMA_PE_Dumper/releases/tag/v1.1.0)
   
 • Memory Searching                                  
 • Memory Overwriting                                  
