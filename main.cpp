@@ -4,7 +4,7 @@
 #include "core.hpp"
 
 void Render_begin(){
-//This function is redundant.
+//This function is redundant and may have no use in future updates.
 }
 
 int main()

@@ -65,9 +65,9 @@ void Render::CreateGLFWWindow() {
 
     // Create window with standard dimensions
     const int windowWidth = 800;
-    const int windowHeight = 600;
+    const int windowHeight = 650;
 
-    glfwWindow = glfwCreateWindow(windowWidth, windowHeight, "Key Of David", nullptr, nullptr);
+    glfwWindow = glfwCreateWindow(windowWidth, windowHeight, "DMA-Memory-Editor", nullptr, nullptr);
 
     if (!glfwWindow) {
         glfwTerminate();

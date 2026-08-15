@@ -777,8 +777,9 @@ void imGuiMenu::miscRender() {
 
         // Movement section
         ImGui::PushFont(imGuiMenu::subTitleText);
-        ImGui::Text("h");
+        ImGui::Text("Empty");
         ImGui::PopFont();
+        /*
 
         ImGui::Dummy(ImVec2(0.0f, textSeparatorSpace));
         ImGui::Checkbox("h", &state);
@@ -793,6 +794,7 @@ void imGuiMenu::miscRender() {
         ImGui::Dummy(ImVec2(0.0f, textSeparatorSpace));
         ImGui::Checkbox("h", &state);
         ImGui::Checkbox("h", &state);
+        */
 
         ImGui::EndChild();
     }
@@ -804,14 +806,14 @@ void imGuiMenu::aboutMeRender() {
         ImGui::BeginChild("About Tab", ImVec2(0, 0), true);
 
         ImGui::PushFont(imGuiMenu::titleText);
-        ImGui::Text("About tel.os");
+        ImGui::Text("About DMA-Memory-Editor");
         ImGui::PopFont();
 
         ImGui::Dummy(ImVec2(0.0f, textSeparatorSpace));
         ImGui::Separator();
         ImGui::Dummy(ImVec2(0.0f, textSeparatorSpace));
 
-        ImGui::Text("Key Of David");
+        ImGui::Text("DMA-Memory-Editor");
         ImGui::Text("Version: 1.0.0");
 
         ImGui::Dummy(ImVec2(0.0f, textSeparatorSpace * 2));
@@ -821,9 +823,8 @@ void imGuiMenu::aboutMeRender() {
         ImGui::PopFont();
 
         ImGui::BulletText("Memory Search");
-        ImGui::BulletText("h");
-        ImGui::BulletText("h");
-        ImGui::BulletText("h");
+        ImGui::BulletText("Memory Write");
+        ImGui::BulletText("Hardware Watchpoints");
 
         ImGui::EndChild();
     }
