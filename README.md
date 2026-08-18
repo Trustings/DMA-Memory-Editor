@@ -67,6 +67,9 @@ After cloning or downloading the repository, open the visual studio solution fil
 
 Download the Windows project binaries at https://github.com/Trustings/DMA-Memory-Editor/releases/tag/v1.0.0 and have them extracted to your working build directory
 
+# Important Information: 
+If you plan on using the debugging features know that some software is able to detect this by checking your Virtual Machine's TSC (Time Stamp Counter)
+
 # Other Tools:
 
 For static analysis you can use https://github.com/Trustings/DMA-PE-Dumper 
