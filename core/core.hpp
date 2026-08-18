@@ -48,6 +48,8 @@ struct state1 {
 
     std::atomic<bool> g_isFirstScan;
 
+    std::atomic<bool> g_SearchResultReset;
+
     std::atomic<bool> FindAccessesesClicked;
 
     std::atomic<uint64_t> strtol_result;

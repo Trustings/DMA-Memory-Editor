@@ -369,6 +369,7 @@ void CopyToClipboard(const char* text) {
             ImGui::SameLine();
             if (ImGui::Button("Reset", ImVec2(80, 0))) {
                 MemorySearch_Reset();
+                state1_s.g_SearchResultReset = true;
                 state1_s.g_isFirstScan = true;
                 selectedResult = -1;
                 state1_s.currentPage = 0;
@@ -440,6 +441,7 @@ void CopyToClipboard(const char* text) {
                 if (ImGui::Button(">>")) state1_s.currentPage = totalPages - 1;
             }
 
+
             ImGui::Separator();
 
             // ===== NEW: KEYBOARD SHORTCUT HANDLER (Ctrl+C) =====
@@ -476,6 +478,9 @@ void CopyToClipboard(const char* text) {
 
                 // Calculate pagination range
                 if (g_searchResults.size() > 0) {
+
+                    static int result = start_mutex_lock();
+
                     size_t startIdx = state1_s.currentPage * resultsPerPage;
                     size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
 
@@ -488,6 +493,10 @@ void CopyToClipboard(const char* text) {
                         // ===== MODIFIED: Address with right-click copy menu =====
                         char addrStr[32];
                         snprintf(addrStr, sizeof(addrStr), "0x%llX", g_searchResults[i].address);
+
+                        if (result == 0){
+                            end_mutex_lock();
+                        }
 
                         // Address (selectable)
                         if (ImGui::Selectable(addrStr, selectedResult == (int)i, ImGuiSelectableFlags_SpanAllColumns)) {
@@ -505,10 +514,11 @@ void CopyToClipboard(const char* text) {
                         if (ImGui::BeginPopup("AddressContextMenu")) {
                             if (ImGui::MenuItem("Find what accesses this address")){
 
-                                MAX_WATCHPOINTS = 20;
-
                                 state1_s.FindAccessesesClicked = true;
                                 state1_s.wp_loop_completed = false;
+
+                                gdb_state_c.wp_started = false;
+                                gdb_state_c.gdb_start_init = true;
 
                                 char *endptr;
                                 long int result;
@@ -546,7 +556,7 @@ void CopyToClipboard(const char* text) {
 
                             }
                             ImGui::EndPopup();
-                     } 
+                         }
                         #endif 
 
                         // ===== END MODIFIED SECTION =====
@@ -555,7 +565,7 @@ void CopyToClipboard(const char* text) {
 
                         // Current value
 
-                        static int result = start_mutex_lock();
+                        static int result2 = start_mutex_lock();
                  
                         if (!g_searchResults[i].currentValue.empty()) {
                             switch (selectedType) {
@@ -567,15 +577,18 @@ void CopyToClipboard(const char* text) {
                             case 5: ImGui::Text("%.6f", *reinterpret_cast<double*>(g_searchResults[i].currentValue.data())); break;
                             default: ImGui::Text("---");
                             }
-
-                            if (result == 0) {
-                            end_mutex_lock();
-                            }
                             
                         } else {
                             ImGui::Text("---");
                         }
+
+                        if(result2 == 0){
+                            end_mutex_lock();
+                        }
+
                         ImGui::NextColumn();
+
+                        static int result3 = start_mutex_lock();
 
                         // Previous value
                         if (!g_searchResults[i].previousValue.empty() &&
@@ -592,6 +605,11 @@ void CopyToClipboard(const char* text) {
                         } else {
                             ImGui::Text("---");
                         }
+
+                        if(result3 == 0){
+                            end_mutex_lock();
+                        }
+
                         ImGui::NextColumn();
 
                         // Type
@@ -610,6 +628,7 @@ void CopyToClipboard(const char* text) {
                         ImGui::NextColumn();
 
                         ImGui::PopID();
+
                     }
 
                     // Show range info at the bottom
@@ -647,64 +666,63 @@ void CopyToClipboard(const char* text) {
                     ImGui::SameLine(rightSideX);
                     if (ImGui::Button("Exit accesses tab", ImVec2(buttonWidth, 0.0f))) {
 
-                        gdb_state_c.gdb_start_init = true;
-                        gdb_state_c.wp_started = false;
-                        state1_s.wp_loop_completed = false;
 
-                        gdb_continue();
-                        gdb_wait_for_stop(50);
+                            gdb_send_interrupt();
 
-                        for (int i = 0; i <= MAX_WATCHPOINTS; i++) {
-                            wp_buffer[i].store(0, std::memory_order_relaxed);
-                        }
+                            memset(wp_buffer, 0, sizeof(wp_buffer));
 
-                        MAX_WATCHPOINTS = 0;
-                        watchpoint_count = 0;
+                            wp_buffer[MAX_WATCHPOINTS] = {0};
 
-                        for (int i = 0; i <= MAX_WATCHPOINTS; i++) {
-                            wp_buffer[i].store(0, std::memory_order_relaxed);
-                        }
+                            watchpoint_count = 0;
+
+                            state1_s.wp_loop_completed = true;
+                            state1_s.FindAccessesesClicked = false;
+                            gdb_state_c.wp_started = true;
+                            gdb_state_c.gdb_start_init = false;
+
+
 
                     }
 
                     ImGui::Separator();
 
-                for (int i = 0; i <= MAX_WATCHPOINTS; i++) {
-                    // Skip if the watchpoint value is 0
-                    if (wp_buffer[i] <= 1) {
-                        continue;
-                    }
-
-                    ImGui::PushID(i);
-
-                    char addrStr[32];
-                    // Note: If wp_buffer stores actual pointers/addresses, use it directly.
-                    // (Kept your original format logic, but changed to match what you need)
-                    snprintf(addrStr, sizeof(addrStr), "0x%llX", (unsigned long long)wp_buffer[i]);
-
-                    // Selectable item
-                    if (ImGui::Selectable(addrStr, selectedResult == i, ImGuiSelectableFlags_SpanAllColumns)) {
-                        selectedResult = i;
-                    }
-
-                    // Trigger the context menu on right-click of this specific item
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                        selectedResult = i;
-                        ImGui::OpenPopup("WpAddressContextMenu"); // Use a distinct popup name
-                    }
-
-                    // Define the popup content scoped to the item or handled right here
-                    if (ImGui::BeginPopup("WpAddressContextMenu")) {
-                        if (selectedResult == i) { // Ensure we are acting on the right index
-                            if (ImGui::MenuItem("Copy Address")) {
-                                ImGui::SetClipboardText(addrStr);
-                            }
+                    for (int i = 0; i <= MAX_WATCHPOINTS; i++) {
+                        // Skip if the watchpoint value is 0
+                        if (wp_buffer[i] <= 1) {
+                            continue;
                         }
-                        ImGui::EndPopup();
+
+                        ImGui::PushID(i);
+
+                        char addrStr[32];
+                        // Note: If wp_buffer stores actual pointers/addresses, use it directly.
+                        // (Kept your original format logic, but changed to match what you need)
+                        snprintf(addrStr, sizeof(addrStr), "0x%llX", (unsigned long long)wp_buffer[i]);
+
+                        // Selectable item
+                        if (ImGui::Selectable(addrStr, selectedResult == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                            selectedResult = i;
+                        }
+
+                        // Trigger the context menu on right-click of this specific item
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                            selectedResult = i;
+                            ImGui::OpenPopup("WpAddressContextMenu"); // Use a distinct popup name
+                        }
+
+                        // Define the popup content scoped to the item or handled right here
+                        if (ImGui::BeginPopup("WpAddressContextMenu")) {
+                            if (selectedResult == i) { // Ensure we are acting on the right index
+                                if (ImGui::MenuItem("Copy Address")) {
+                                    ImGui::SetClipboardText(addrStr);
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+
+                        ImGui::PopID();
                     }
 
-                    ImGui::PopID();
-                }
      
 
             }

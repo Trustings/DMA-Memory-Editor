@@ -6,18 +6,18 @@ pid_t gdb_pid = -1;
 int gdb_stdin = -1;
 int gdb_stdout = -1;
 int breakpoint_count = 0;
-std::atomic<int> watchpoint_count = 0;
+int watchpoint_count = 0;
 
-std::atomic<int> MAX_WATCHPOINTS{20};
-
-// Declare wp_buffer as a vector of atomic elements
-std::vector<std::atomic<uint64_t>> wp_buffer(MAX_WATCHPOINTS.load());
+uint64_t wp_buffer[MAX_WATCHPOINTS] = {0};
 
 static bool g_verbose = true;  // Toggle verbose output
 
 struct gdb_state gdb_state_c = {
     .gdb_start_init = true,
     .wp_started = false,
+    .InContinue = false,
+    .WaitForStop = false,
+    .ReadRegister = false,
 };
 
 void gdb_set_verbose(bool verbose) {
@@ -294,9 +294,14 @@ void gdb_clear_all_watchpoints(void) {
 }
 
 int gdb_continue(void) {
+
+    gdb_state_c.InContinue = true;
+
     if (gdb_stdin < 0) return -1;
     const char* cmd = "continue\n";
     write_all(gdb_stdin, cmd, strlen(cmd));
+
+    gdb_state_c.InContinue = false;
     return 0;
 }
 int gdb_single_step(void) {
@@ -305,6 +310,7 @@ int gdb_single_step(void) {
 }
 
 int gdb_wait_for_stop(int timeout_ms) {
+    gdb_state_c.WaitForStop = true;
     if (gdb_stdout < 0) return 0;
 
     // Do NOT send any command here. GDB is currently blocked executing
@@ -325,10 +331,14 @@ int gdb_wait_for_stop(int timeout_ms) {
     if (g_verbose && response[0] != '\0') {
         printf("[GDB <-] %s\n", response);
     }
+    gdb_state_c.WaitForStop = false;
     return 1;
 }
 
 uint64_t gdb_read_register(const char* reg_name) {
+
+    gdb_state_c.ReadRegister = true;
+
     char response[32768];
     memset(response, 0, sizeof(response));
     if (send_gdb_command_fast("info registers", response, sizeof(response), 200) < 0) return 0;
@@ -347,6 +357,8 @@ uint64_t gdb_read_register(const char* reg_name) {
     if (pos[0] == '0' && pos[1] == 'x') {
         return strtoull(pos, NULL, 16);
     }
+
+    gdb_state_c.ReadRegister = false;
     return 0;
 }
 

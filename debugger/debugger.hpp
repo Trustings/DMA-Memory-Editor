@@ -25,20 +25,21 @@ extern pid_t gdb_pid;
 extern int gdb_stdin;
 extern int gdb_stdout;
 extern int breakpoint_count;
-extern std::atomic<int> watchpoint_count;
+extern int watchpoint_count;
 
-extern std::atomic<int> MAX_WATCHPOINTS;
+#define MAX_WATCHPOINTS 20
 
 // Declare wp_buffer as a vector of atomic elements
-extern std::vector<std::atomic<uint64_t>> wp_buffer;
+extern uint64_t wp_buffer[MAX_WATCHPOINTS];
 
 struct gdb_state{
-    // gdb_state is not atomic and not safe to share among multiple threads.
+    // gdb_state is not fully atomic and not safe to share among multiple threads.
 
     bool gdb_start_init;
     bool wp_started;
-
-
+    std::atomic <bool> InContinue;
+    std::atomic <bool> WaitForStop;
+    std::atomic <bool> ReadRegister;
 
 };
 

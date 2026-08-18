@@ -2,6 +2,7 @@
 #include "list.hpp"
 #include "render.hpp"
 #include "core.hpp"
+#include <print>
 
 void Render_begin(){
 //This function is redundant and may have no use in future updates.

@@ -217,7 +217,7 @@ void MemorySearch_NextScan(DWORD pid) {
 void MemorySearch_Reset() {
     g_searchResults.clear();
     g_searchDepth = 0;
-    state1_s.g_isFirstScan = true;
+
     printf("[+] Search reset\n");
 }
 

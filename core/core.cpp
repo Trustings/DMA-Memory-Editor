@@ -3,6 +3,8 @@
 pthread_mutex_t mutex0;
 bool has_lock = false;
 
+pthread_t thread_id1 = NULL;
+
 struct state0 state0_s = { .firstTimeInTab = false,
                           .firstTimeInTab_Completed = false,
                           .AttachProcessButtonClicked = false,
@@ -12,6 +14,7 @@ struct state1 state1_s = {.State1End = false,
                           .currentPage = 0,
                           .FirstMemorySearch = false,
                           .g_isFirstScan = false,
+                          .g_SearchResultReset = false,
                           .FindAccessesesClicked = false,
                           .strtol_result = 0,
                           .wp_loop_completed = false};
@@ -96,19 +99,20 @@ void* sync_operations(void* arg){
 
             }
 
-            #ifdef __linux
-            if(state1_s.FindAccessesesClicked && !state1_s.wp_loop_completed){
+            #ifdef __linux__
+            if(state1_s.FindAccessesesClicked){
 
-                if(gdb_state_c.gdb_start_init){
-                    if(gdb_init() == 1){
+                if(gdb_state_c.gdb_start_init && state1_s.FindAccessesesClicked){
+                    if(gdb_init() == 1 && state1_s.FindAccessesesClicked){
                         gdb_state_c.gdb_start_init = false;
                     } else {
                         printf("gdb failed to initialize!");
                         abort();
                     }
 
-                    if(!gdb_state_c.wp_started){
-                        if(gdb_set_watchpoint_hardware(state1_s.strtol_result) == 0){
+
+                    if(!gdb_state_c.wp_started && state1_s.FindAccessesesClicked){
+                        if(gdb_set_watchpoint_hardware(state1_s.strtol_result) == 0 && state1_s.FindAccessesesClicked){
                             gdb_state_c.wp_started = true;
 
                             gdb_continue();
@@ -120,58 +124,64 @@ void* sync_operations(void* arg){
 
                             int result = wp_helper(wp_addr);
 
-                            if (result == 1){
+                            if (result == 1 && state1_s.FindAccessesesClicked){
                                 printf("New wp addr at 0x%llx\n", wp_addr);
-                            } else if (result == 0) {
+                            } else if (result == 0 && state1_s.FindAccessesesClicked) {
                                 printf("Duplicate wp addr 0x%llx...skipping\n", wp_addr);
                             } else {
                                 printf("Buffer full, MAX_WATCHPOINTS hit\n");
+                                state1_s.wp_loop_completed = true;
                             }
+
+                        } else {
+                            gdb_clear_all_watchpoints();
+                            gdb_cleanup();
+                            state1_s.wp_loop_completed = true;
 
                         }
 
-                     }
-
-
-
-                 }
-
-                if(!state1_s.wp_loop_completed){
-                gdb_continue();
-                gdb_wait_for_stop(30000);
-
-                uint64_t wp_addr = gdb_read_register("rip");
-
-                printf("RIP at wp: 0x%llx\n", wp_addr);
-
-                int result = wp_helper(wp_addr);
-
-                if (result == 1){
-                    printf("New wp addr at 0x%llx\n", wp_addr);
-                } else if (result == 0) {
-                    printf("Duplicate wp addr 0x%llx...skipping\n", wp_addr);
-                } else {
-                    printf("Buffer full, MAX_WATCHPOINTS hit\n");
-                    gdb_clear_all_watchpoints();
-                    gdb_cleanup();
-
-                    for (int i = 0; i <= MAX_WATCHPOINTS; i++) {
-                        wp_buffer[i].store(0, std::memory_order_relaxed);
                     }
 
 
-                    MAX_WATCHPOINTS = 20;
-                    watchpoint_count = 0;
 
-
-                    state1_s.wp_loop_completed = true;
-                    state1_s.FindAccessesesClicked = false;
                 }
+
+                if(!state1_s.wp_loop_completed && state1_s.FindAccessesesClicked){
+                    gdb_continue();
+                    gdb_wait_for_stop(30000);
+
+                    uint64_t wp_addr = gdb_read_register("rip");
+
+                    printf("RIP at wp: 0x%llx\n", wp_addr);
+
+                    int result = wp_helper(wp_addr);
+
+                    if (result == 1 && state1_s.FindAccessesesClicked){
+                        printf("New wp addr at 0x%llx\n", wp_addr);
+                    } else if (result == 0 && state1_s.FindAccessesesClicked) {
+                        printf("Duplicate wp addr 0x%llx...skipping\n", wp_addr);
+                    } else {
+                        printf("Buffer full, MAX_WATCHPOINTS hit\n");
+                        gdb_clear_all_watchpoints();
+                        gdb_cleanup();
+
+                        memset(wp_buffer, 0, sizeof(wp_buffer));
+
+                        wp_buffer[MAX_WATCHPOINTS] = {0};
+
+
+                        watchpoint_count = 0;
+
+
+                        state1_s.wp_loop_completed = true;
+                        state1_s.FindAccessesesClicked = false;
+                    }
 
                 }
 
             }
             #endif
+
 
         }
     }
