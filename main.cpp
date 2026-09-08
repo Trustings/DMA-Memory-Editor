@@ -12,11 +12,20 @@ static void RenderFrame() {
 
 int main(int argc, char** argv)
 {
-    // Line-buffer stdout so that progress and error messages stay in order
-    // when the output is redirected to a file or a pipe. Block-buffered
-    // stdout otherwise arrives after unbuffered stderr, which makes a log of
-    // a failed run read back-to-front.
+    // Keep stdout in order with stderr when output is redirected to a file or
+    // a pipe; block-buffered stdout otherwise arrives after unbuffered stderr,
+    // which makes the log of a failed run read back-to-front.
+    //
+    // The two CRTs disagree here. glibc takes a zero size for _IOLBF as "pick
+    // a suitable buffer", but the MSVC CRT requires size >= 2 for _IOLBF and
+    // _IOFBF -- passing 0 trips the invalid parameter handler and fast-fails
+    // (0xC0000409) before main() prints anything. MSVC also maps _IOLBF onto
+    // full buffering, so unbuffered is what actually preserves ordering there.
+#ifdef _WIN32
+    setvbuf(stdout, nullptr, _IONBF, 0);
+#else
     setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
 
     Config_LoadDefaultFile(argc > 0 ? argv[0] : nullptr);
 
