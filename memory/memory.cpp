@@ -1,1051 +1,983 @@
 #include "memory.hpp"
+#include "config.hpp"
 
-uint32_t pid = 0;
+#include <cctype>
+#include <cstdlib>
 
-uint64_t gafAsyncKeyStateExport = 0;
-uint8_t state_bitmap[64]{ };
-uint8_t previous_state_bitmap[256 / 8]{ };
-uint64_t win32kbase = 0;
+#ifdef __linux__
+#include <signal.h>
+#include <fcntl.h>
+#endif
 
-int win_logon_pid = 0;
-
-std::chrono::time_point<std::chrono::system_clock> start = std::chrono::system_clock::now();
-
-
-VMM_HANDLE hVMM = nullptr;
+VMM_HANDLE  hVMM                 = nullptr;
 std::string process_name;
 std::string DLL_Name;
-uint32_t process_id = 0;
-HANDLE process_handle = nullptr;
-ULONG64 process_base_address = 0;
-ULONG64 DLL_base_address = 0;
-DWORD process_size = 0;
-DWORD DLL_size = 0;
+uint32_t    process_id           = 0;
+HANDLE      process_handle       = nullptr;
+ULONG64     process_base_address = 0;
+ULONG64     DLL_base_address     = 0;
+DWORD       process_size         = 0;
+DWORD       DLL_size             = 0;
 
-uint64_t cbSize = 0x80000;
+static uint64_t cbSize = 0x80000;
 
-#ifdef LINUX
+// ---------------------------------------------------------------------------
+// Linux helpers
+// ---------------------------------------------------------------------------
+#ifdef __linux__
 
-DWORD GetLastError() {
-    return errno;
-}
-
-std::vector<pid_t> getPidsByName(const std::string& processName) {
+// Enumerate PIDs whose /proc/<pid>/cmdline contains `processName`.
+//
+// The previous implementation returned -1 whenever errno happened to be set
+// after the readdir loop -- and errno is routinely set by the fopen() calls
+// inside that loop, for processes that exit mid-scan or that this user cannot
+// read. The result was a spurious "No qemu-system-x86 processes found" on a
+// machine that clearly had one running.
+static std::vector<pid_t> GetPidsByName(const std::string& processName) {
     std::vector<pid_t> pids;
 
-    for (const auto& entry : std::filesystem::directory_iterator("/proc")) {
-        if (entry.is_directory()) {
-            try {
-                pid_t pid = std::stoi(entry.path().filename());
-                std::ifstream cmdlineFile(entry.path() / "cmdline");
-                std::string cmdline;
-                if (std::getline(cmdlineFile, cmdline)) {
-                    if (cmdline.find(processName) != std::string::npos) {
-                        pids.push_back(pid);
-                    }
-                }
-            } catch (...) {
-                continue;
-            }
-        }
-    }
-    return pids;
-}
-
-int get_pids_by_name(const char *processName, pid_t **pids) {
-    DIR *proc_dir;
-    struct dirent *entry;
-    int pid_count = 0;
-    int capacity = 10;
-
-    if (!processName || !pids) {
-        return -1;
+    DIR* proc = opendir("/proc");
+    if (!proc) {
+        fprintf(stderr, "[!] Failed to open /proc: %s\n", strerror(errno));
+        return pids;
     }
 
-    *pids = NULL;
-
-    proc_dir = opendir("/proc");
-    if (!proc_dir) {
-        fprintf(stderr, "Failed to open /proc: %s\n", strerror(errno));
-        return -1;
-    }
-
-    pid_t *found_pids = (pid_t*)malloc(capacity * sizeof(pid_t));
-    if (!found_pids) {
-        closedir(proc_dir);
-        return -1;
-    }
-
-    while ((entry = readdir(proc_dir)) != NULL) {
-        bool is_pid = true;
+    struct dirent* entry = nullptr;
+    while ((entry = readdir(proc)) != nullptr) {
+        bool isPid = entry->d_name[0] != '\0';
         for (int i = 0; entry->d_name[i] != '\0'; i++) {
-            if (!isdigit(entry->d_name[i])) {
-                is_pid = false;
+            if (!isdigit((unsigned char)entry->d_name[i])) {
+                isPid = false;
                 break;
             }
         }
-
-        if (!is_pid) {
+        if (!isPid) {
             continue;
         }
 
-        pid_t pid = (pid_t)atoi(entry->d_name);
+        const pid_t pid = (pid_t)atoi(entry->d_name);
         if (pid <= 0) {
             continue;
         }
 
-        char cmdline_path[256];
-        snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%d/cmdline", pid);
+        char path[256];
+        snprintf(path, sizeof(path), "/proc/%d/cmdline", (int)pid);
 
-        FILE *cmdline_file = fopen(cmdline_path, "r");
-        if (!cmdline_file) {
-            continue;
+        FILE* file = fopen(path, "rb");
+        if (!file) {
+            continue;   // process gone, or not ours to read -- not an error
         }
 
         char cmdline[4096];
-        if (fgets(cmdline, sizeof(cmdline), cmdline_file)) {
-            if (strstr(cmdline, processName) != NULL) {
-                if (pid_count >= capacity) {
-                    capacity *= 2;
-                    pid_t *temp = (pid_t*)realloc(found_pids, capacity * sizeof(pid_t));
-                    if (!temp) {
-                        free(found_pids);
-                        fclose(cmdline_file);
-                        closedir(proc_dir);
-                        return -1;
-                    }
-                    found_pids = temp;
-                }
-                found_pids[pid_count++] = pid;
+        const size_t got = fread(cmdline, 1, sizeof(cmdline) - 1, file);
+        fclose(file);
+
+        if (got == 0) {
+            continue;
+        }
+        cmdline[got] = '\0';
+
+        // cmdline is NUL-separated; flatten it so a substring search sees the
+        // whole command line rather than just argv[0].
+        for (size_t i = 0; i < got; i++) {
+            if (cmdline[i] == '\0') {
+                cmdline[i] = ' ';
             }
         }
 
-        fclose(cmdline_file);
+        if (strstr(cmdline, processName.c_str()) != nullptr) {
+            pids.push_back(pid);
+        }
     }
 
-    closedir(proc_dir);
+    closedir(proc);
+    return pids;
+}
 
-    if (errno != 0) {
-        free(found_pids);
+// Run a command without going through a shell. Everything here used to be
+// built by string concatenation and handed to system(), which meant any path
+// containing a space or a shell metacharacter would misbehave.
+static int RunCommand(const std::vector<std::string>& args, bool quiet = true) {
+    if (args.empty()) {
         return -1;
     }
 
-    if (pid_count == 0) {
-        free(found_pids);
-        return 0;
+    const pid_t child = fork();
+    if (child < 0) {
+        return -1;
     }
 
-    // Resize to exact size
-    pid_t *temp = (pid_t*)realloc(found_pids, pid_count * sizeof(pid_t));
-    if (temp) {
-        found_pids = temp;
-    }
-
-    *pids = found_pids;
-    return pid_count;
-}
-
-/**
- * Initialize VMM for memory access
- */
-bool Initialize() {
-
-    // Get PIDs by name
-    pid_t *pids = NULL;
-    int pid_count = get_pids_by_name("qemu-system-x86", &pids);
-
-    if (pid_count <= 0) {
-        printf("[!] No qemu-system-x86 processes found\n");
-        if (pids) free(pids);
-        return false;
-    }
-
-    // Use the first PID found
-    pid_t pid = pids[0];
-    printf("[+] Found PID: %d\n", pid);
-
-    // Build URL string
-    char url[256];
-    snprintf(url, sizeof(url), "qemu://hugepage-pid=%d,qmp=/tmp/qmp-win10.sock", pid);
-
-    printf("[+] Using URL: %s\n", url);
-
-    // Initialize VMM parameters
-    const char *Parameters[] = {
-        "",
-        "-device",
-        url,
-        "-mount",
-        "/mnt/memproc",
-        "-v",
-        NULL
-    };
-
-    LPSTR mount_point = const_cast<LPSTR>("/mnt/memproc");
-
-    int param_count = 6;  // Number of parameters before NULL
-
-    // Initialize VMM
-    hVMM = VMMDLL_Initialize(param_count, Parameters);
-
-    if (!hVMM) {
-        printf("[!] Failed to initialize memory process file system in call to VMMDLL_Initialize\n");
-        free(pids);
-        return false;
-    }
-
-    printf("[+] Successfully initialized VMM\n");
-
-    if (!VMMDLL_InitializePlugins(hVMM))
-    {
-        printf("[-] Failed VMMDLL_InitializePlugins call\n");
-
-        return false;
-    }
-
-    // Clean up pids array
-    free(pids);
-
-#ifdef MEMPROCFS
-    memprocfs(&mount_point);
-#endif
-
-    return true;
-}
-
-bool InitializeDLL(const std::string process_name, const std::string DLL_Name)
-{
-
-    printf("[+] Process id: %d\n", process_id);
-
-    if (!process_id)
-    {
-        printf("[!] Failed to get process id of %s\n", process_name);
-
-    }
-
-    if (!GetDLLModuleBase(process_id, DLL_Name))
-    {
-        printf("[+] Failed to get base address/size of process 0x%lX (Error: %d)\n", DLL_base_address, GetLastError());
-
-    }
-
-    printf("[+] Base address: 0x%llX\n", DLL_base_address);
-    printf("[+] Image size: 0x%llX\n", DLL_size);
-
-    return true;
-
-}
-
-#endif
-
-#ifdef _WIN32
-bool Initialize()
-{
-
-    LPCSTR Parameters[] = { "", "-device", "fpga" };
-
-    hVMM = VMMDLL_Initialize(3, Parameters);
-    DWORD error_code;
-
-    if (!hVMM) {
-        printf("[!] Failed to initialize memory process file system in call to vmm.dll!VMMDLL_Initialize (Error: %d)\n", GetLastError());
-        return false;
-    }
-
-    printf("[>] Init handle VMM success\n");
-
-    return true;
-}
-
-
-bool InitializeDLL(const std::string process_name, const std::string DLL_Name)
-{
-
-    printf("[+] Process id: %d\n", process_id);
-
-    if (!process_id)
-    {
-        printf("[!] Failed to get process id of %s\n", process_name);
-
-    }
-
-    if (!GetDLLModuleBase(process_id, DLL_Name))
-    {
-        printf("[+] Failed to get base address/size of process 0x%lX (Error: %d)\n", DLL_base_address, GetLastError());
-
-    }
-
-    printf("[+] Base address: 0x%llX\n", DLL_base_address);
-    printf("[+] Image size: 0x%llX\n", DLL_size);
-
-    return true;
-
-}
-
-#endif
-
-VOID cbAddFile(_Inout_ HANDLE h, _In_ LPCSTR uszName, _In_ ULONG64 cb, _In_opt_ PVMMDLL_VFS_FILELIST_EXINFO pExInfo)
-{
-    if (strcmp(uszName, "dtb.txt") == 0)
-        cbSize = cb;
-}
-
-bool vmmdll_read(uint64_t address, void* buffer, size_t size) {
-    if (!VMMDLL_MemRead(hVMM, (DWORD)process_id, (ULONG64)address, (PBYTE)buffer, size)) {
-        DWORD error_code = GetLastError();
-        printf("[!] VMMDLL_MemRead failed at address 0x%llX with size %zu (Error: %d)\n", address, size, error_code);
-        return false;
-    }
-    return true;
-}
-
-#ifdef _WIN32
-
-bool FixCr3_1()
-{
-    PVMMDLL_MAP_MODULEENTRY module_entry;
-    bool result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, (LPSTR)process_name.c_str(), &module_entry, NULL);
-    if (result)
-        return true; //Doesn't need to be patched lol
-
-    if (!VMMDLL_InitializePlugins(hVMM))
-    {
-        ERROR("[-] Failed VMMDLL_InitializePlugins call");
-        return false;
-    }
-
-    //have to sleep a little or we try reading the file before the plugin initializes fully
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-    while (true)
-    {
-        BYTE bytes[4] = { 0 };
-        DWORD i = 0;
-        auto nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\progress_percent.txt", bytes, 3, &i, 0);
-        if (nt == VMMDLL_STATUS_SUCCESS && atoi((LPSTR)bytes) == 100)
-            break;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-
-    VMMDLL_VFS_FILELIST2 VfsFileList;
-    VfsFileList.dwVersion = VMMDLL_VFS_FILELIST_VERSION;
-    VfsFileList.h = 0;
-    VfsFileList.pfnAddDirectory = 0;
-    VfsFileList.pfnAddFile = cbAddFile; //dumb af callback who made this system
-
-    result = VMMDLL_VfsListU(hVMM, (LPSTR)"\\misc\\procinfo\\", &VfsFileList);
-    if (!result)
-        return false;
-
-    //read the data from the txt and parse it
-    const size_t buffer_size = cbSize;
-    std::unique_ptr<BYTE[]> bytes(new BYTE[buffer_size]);
-    DWORD j = 0;
-    auto nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\dtb.txt", bytes.get(), buffer_size - 1, &j, 0);
-    if (nt != VMMDLL_STATUS_SUCCESS)
-        return false;
-
-    std::vector<uint64_t> possible_dtbs;
-    std::string lines(reinterpret_cast<char*>(bytes.get()));
-    std::istringstream iss(lines);
-    std::string line;
-
-    while (std::getline(iss, line))
-    {
-        Info info = { };
-
-        std::istringstream info_ss(line);
-        if (info_ss >> std::hex >> info.index >> std::dec >> info.process_id >> std::hex >> info.dtb >> info.kernelAddr >> info.name)
-        {
-            if (info.process_id == 0) //parts that lack a name or have a NULL pid are suspects
-                possible_dtbs.push_back(info.dtb);
-            if (process_name.find(info.name) != std::string::npos)
-                possible_dtbs.push_back(info.dtb);
+    if (child == 0) {
+        if (quiet) {
+            const int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > STDERR_FILENO) {
+                    close(devnull);
+                }
+            }
         }
-    }
 
-    //loop over possible dtbs and set the config to use it til we find the correct one
-    for (size_t i = 0; i < possible_dtbs.size(); i++)
-    {
-        auto dtb = possible_dtbs[i];
-        VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_PROCESS_DTB | process_id, dtb);
-        result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, (LPSTR)process_name.c_str(), &module_entry, NULL);
-        if (result)
-        {
-            printf("Patched DTB");
-            return true;
+        std::vector<char*> argv;
+        argv.reserve(args.size() + 1);
+        for (const auto& a : args) {
+            argv.push_back(const_cast<char*>(a.c_str()));
         }
+        argv.push_back(nullptr);
+
+        execvp(argv[0], argv.data());
+        _exit(127);
     }
 
-    ERROR("[-] Failed to patch module");
-    return false;
-}
-
-#endif
-
-VMMDLL_SCATTER_HANDLE CreateScatterHandle()
-{
-    return VMMDLL_Scatter_Initialize(hVMM, process_id, VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-}
-
-void CloseScatterHandle(VMMDLL_SCATTER_HANDLE handle)
-{
-    VMMDLL_Scatter_CloseHandle(handle);
-}
-
-void AddScatterRead(VMMDLL_SCATTER_HANDLE handle, uint64_t address, void* buffer, size_t size)
-{
-    VMMDLL_Scatter_PrepareEx(handle, address, size, static_cast<PBYTE>(buffer), NULL);
-}
-
-void ExecuteScatterRead(VMMDLL_SCATTER_HANDLE handle)
-{
-    VMMDLL_Scatter_ExecuteRead(handle);
-    VMMDLL_Scatter_Clear(handle, process_id, VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-}
-
-bool vmmdll_write(uint64_t address, void* buffer, size_t size) {
-    if (!VMMDLL_MemWrite(hVMM, (DWORD)process_id, (ULONG64)address, (PBYTE)buffer, size)) {
-        DWORD error_code = GetLastError();
-        printf("[!] VMMDLL_MemWrite failed at address 0x%llX with size %zu (Error: %d)\n", address, size, error_code);
-        return false;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child) {
+        return -1;
     }
-
-    return true;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-uint32_t get_process_id(const std::string process_name)
-{
-    DWORD dwPID;
-    bool result = VMMDLL_PidGetFromName(hVMM, const_cast<char*>(process_name.c_str()), &dwPID);
-    if (!result) {
-        printf("[!] VMMDLL_PidGetFromName failed (Error: %d)\n", GetLastError());
-        return 0;
-    }
-    return dwPID;
-}
-
-#ifdef LINUX
-static void force_unmount(const std::string& mountPoint = "/mnt/memproc") {
-    // Try umount first
-    int result = umount(mountPoint.c_str());
-    if (result == 0) {
-        std::cout << "Successfully unmounted " << mountPoint << std::endl;
+static void ForceUnmount(const std::string& mountPoint) {
+    // fusermount first: it is the only one of these that works without root,
+    // which matters because MemProcFS is mounted through FUSE.
+    if (RunCommand({ "fusermount", "-uz", mountPoint }) == 0) {
+        printf("[+] Unmounted %s with fusermount\n", mountPoint.c_str());
         return;
     }
 
-    // If umount fails, try lazy umount
-    result = umount2(mountPoint.c_str(), MNT_DETACH);
-    if (result == 0) {
-        std::cout << "Lazy unmounted " << mountPoint << std::endl;
+    if (umount(mountPoint.c_str()) == 0) {
+        printf("[+] Unmounted %s\n", mountPoint.c_str());
         return;
     }
 
-    // If still failing, try force umount with fusermount
-    std::string cmd = "fusermount -uz " + mountPoint + " 2>/dev/null";
-    if (system(cmd.c_str()) == 0) {
-        std::cout << "Force unmounted " << mountPoint << " with fusermount" << std::endl;
+    if (umount2(mountPoint.c_str(), MNT_DETACH) == 0) {
+        printf("[+] Lazy unmounted %s\n", mountPoint.c_str());
         return;
     }
 
-    // Last resort: try to kill any remaining fuse processes
-    std::string killCmd = "pkill -f 'memprocfs.*" + mountPoint + "' 2>/dev/null";
-    system(killCmd.c_str());
-
-    std::cout << "[+] Attempted to clean up " << mountPoint << std::endl;
-}
-
-// Kill any existing memprocfs processes
-static void kill_existing_memprocfs() {
-    // Kill any existing memprocfs processes
-    std::string killCmd = "pkill -f 'memprocfs.*-mount /mnt/memproc' 2>/dev/null";
-    system(killCmd.c_str());
-
-    // Force unmount
-    force_unmount("/mnt/memproc");
-
-    // Wait a moment for cleanup
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    printf("[+] Nothing to unmount at %s (%s)\n", mountPoint.c_str(), strerror(errno));
 }
 
 static pid_t g_memprocPid = -1;
-// Launch memprocfs with suppressed output
-static bool init_memprocfs(const std::string& qmpSocket = "/tmp/qmp-win10-1.sock") {
-    // First, clean up any old mount and kill existing instances
-    kill_existing_memprocfs();
 
-    // Get QEMU process IDs
-    auto pids = getPidsByName("qemu-system-x86");
+static void KillExistingMemProcFs() {
+    RunCommand({ "pkill", "-f", g_config.memprocfsPath + ".*-mount " + g_config.mountPoint });
+    ForceUnmount(g_config.mountPoint);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+}
 
+// Launch memprocfs so that /mnt/memproc/misc/procinfo is available. Only used
+// as a fallback when a process DTB needs recovering.
+static bool InitMemProcFs() {
+    KillExistingMemProcFs();
+
+    const std::vector<pid_t> pids = GetPidsByName(g_config.qemuProcessName);
     if (pids.empty()) {
-        std::cerr << "No QEMU process found" << std::endl;
+        fprintf(stderr, "[!] No %s process found\n", g_config.qemuProcessName.c_str());
         return false;
     }
 
-    pid_t qemuPid = pids[0];
-    std::cout << "[+] Found QEMU PID: " << qemuPid << std::endl;
+    const std::string url = "qemu://hugepage-pid=" + std::to_string((int)pids[0]) +
+                            ",qmp=" + g_config.memprocfsQmp;
 
-    // Build the URL
-    std::string url = "qemu://hugepage-pid=" + std::to_string(qemuPid) + ",qmp=" + qmpSocket;
-    std::cout << "[>] Launching: ./memprocfs -device " << url << " -mount /mnt/memproc -v" << std::endl;
+    printf("[>] Launching: %s -device %s -mount %s\n",
+           g_config.memprocfsPath.c_str(), url.c_str(), g_config.mountPoint.c_str());
 
-    // Fork and execute
-    pid_t childPid = fork();
-
-    if (childPid == -1) {
-        std::cerr << "Failed to fork process" << std::endl;
+    const pid_t child = fork();
+    if (child == -1) {
+        fprintf(stderr, "[!] Failed to fork\n");
         return false;
     }
 
-    if (childPid == 0) {
-        // Child process - execute memprocfs with output suppressed
-        // Redirect stdout and stderr to /dev/null
-        freopen("/dev/null", "w", stdout);
-        freopen("/dev/null", "w", stderr);
+    if (child == 0) {
+        const int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) {
+                close(devnull);
+            }
+        }
 
-        static char char_buff[PATH_MAX];
-        static char dir_buffer[PATH_MAX];
-        static char* active_build_directory;
-
-        getcwd(char_buff, sizeof(char_buff));
-        sprintf(dir_buffer, "%s/memprocfs", char_buff);
-
-        active_build_directory = dir_buffer;
-
-        execlp(active_build_directory,
-            "memprocfs",
-            "-device",
-            url.c_str(),
-            "-mount",
-            "/mnt/memproc",
-            "-v",
-            NULL);
-
-        // If we get here, execlp failed
-        std::cerr << "Failed to execute memprocfs: " << strerror(errno) << std::endl;
-        exit(1);
+        execlp(g_config.memprocfsPath.c_str(),
+               "memprocfs",
+               "-device", url.c_str(),
+               "-mount",  g_config.mountPoint.c_str(),
+               "-v",
+               (char*)NULL);
+        _exit(127);
     }
 
-    // Store the PID globally
-    g_memprocPid = childPid;
-
-    // Wait 3 seconds for it to initialize
+    g_memprocPid = child;
     std::this_thread::sleep_for(std::chrono::seconds(3));
 
-    // Check if process is still running
-    if (kill(childPid, 0) == 0) {
-        std::cout << "[+] memprocfs launched successfully with PID: " << childPid << std::endl;
-        return true;
-    }
-    else {
-        std::cerr << "[!] memprocfs terminated during startup" << std::endl;
+    int status = 0;
+    if (waitpid(child, &status, WNOHANG) == child) {
+        fprintf(stderr, "[!] memprocfs terminated during startup "
+                        "(is '%s' present and executable?)\n",
+                g_config.memprocfsPath.c_str());
         g_memprocPid = -1;
         return false;
     }
+
+    printf("[+] memprocfs launched with PID %d\n", (int)child);
+    return true;
 }
 
-// Terminate memprocfs with proper cleanup
-static void terminate_memprocfs() {
+static void TerminateMemProcFs() {
     if (g_memprocPid <= 0) {
-        std::cout << "memprocfs not running or already terminated" << std::endl;
         return;
     }
 
-    std::cout << "[>] Terminating memprocfs (PID: " << g_memprocPid << ")" << std::endl;
+    printf("[>] Terminating memprocfs (PID %d)\n", (int)g_memprocPid);
+    ForceUnmount(g_config.mountPoint);
 
-    // First, try to unmount cleanly
-    std::cout << "[>] Unmounting /mnt/memproc..." << std::endl;
-    int umountResult = umount("/mnt/memproc");
-    if (umountResult != 0) {
-        // Try lazy unmount
-        umount2("/mnt/memproc", MNT_DETACH);
-        std::cout << "[+] Used lazy unmount" << std::endl;
-    }
-    else {
-        std::cout << "[+] Unmounted successfully" << std::endl;
-    }
-
-    // Try graceful termination
     if (kill(g_memprocPid, SIGTERM) == 0) {
-        // Wait up to 3 seconds for graceful termination
-        int status;
         for (int i = 0; i < 15; i++) {
-            pid_t result = waitpid(g_memprocPid, &status, WNOHANG);
-            if (result == g_memprocPid) {
-                std::cout << "[+] memprocfs terminated gracefully" << std::endl;
+            int status = 0;
+            if (waitpid(g_memprocPid, &status, WNOHANG) == g_memprocPid) {
                 g_memprocPid = -1;
+                printf("[+] memprocfs terminated\n");
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
-        // If still running, force kill
-        std::cout << "[!] memprocfs didn't respond to SIGTERM, forcing kill..." << std::endl;
+        printf("[!] memprocfs ignored SIGTERM, killing\n");
         if (kill(g_memprocPid, SIGKILL) == 0) {
+            int status = 0;
             waitpid(g_memprocPid, &status, 0);
-            std::cout << "[+] memprocfs force killed" << std::endl;
         }
     }
-    else {
-        // Process doesn't exist anymore
-        std::cerr << "[+] memprocfs already terminated" << std::endl;
-    }
 
-    // Final cleanup - force unmount if still mounted
-    force_unmount("/mnt/memproc");
-
+    ForceUnmount(g_config.mountPoint);
     g_memprocPid = -1;
 }
 
-bool FixCr3_1()
-{
-    init_memprocfs();
+#endif // __linux__
 
-    // First try direct lookup
-    PVMMDLL_MAP_MODULEENTRY module_entry;
-    if (VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, const_cast<char*>(process_name.c_str()), &module_entry, NULL))
-    {
-        printf("[+] DTB already correct\n");
-        VMMDLL_MemFree(module_entry);
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
 
-        terminate_memprocfs();
+// Build the LeechCore device string, either from config or by autodetecting
+// the local QEMU instance.
+static bool ResolveDeviceString(std::string& device) {
+    if (!g_config.device.empty()) {
+        device = g_config.device;
         return true;
     }
 
-    if (!VMMDLL_InitializePlugins(hVMM))
-    {
-        printf("[-] Failed VMMDLL_InitializePlugins call\n");
+#ifdef __linux__
+    const std::vector<pid_t> pids = GetPidsByName(g_config.qemuProcessName);
+    if (pids.empty()) {
+        fprintf(stderr,
+                "[!] No '%s' process found.\n"
+                "    Start the VM first, or pass --device explicitly\n"
+                "    (e.g. --device fpga).\n",
+                g_config.qemuProcessName.c_str());
+        return false;
+    }
 
-        terminate_memprocfs();
+    printf("[+] Found %s with PID %d\n", g_config.qemuProcessName.c_str(), (int)pids[0]);
+    device = "qemu://hugepage-pid=" + std::to_string((int)pids[0]) +
+             ",qmp=" + g_config.qmpSocket;
+    return true;
+#else
+    device = "fpga";
+    return true;
+#endif
+}
+
+bool Initialize() {
+    if (hVMM) {
+        return true;
+    }
+
+    std::string device;
+    if (!ResolveDeviceString(device)) {
+        return false;
+    }
+
+    printf("[+] Using device: %s\n", device.c_str());
+
+    std::vector<const char*> parameters;
+    parameters.push_back("");
+    parameters.push_back("-device");
+    parameters.push_back(device.c_str());
+    if (g_config.verbose) {
+        parameters.push_back("-v");
+    }
+
+    hVMM = VMMDLL_Initialize((DWORD)parameters.size(),
+                             const_cast<LPCSTR*>(parameters.data()));
+    if (!hVMM) {
+        fprintf(stderr,
+                "[!] VMMDLL_Initialize failed for device '%s'.\n"
+                "    Check that the backend is reachable and that this process\n"
+                "    has the privileges it needs (hugepages/FPGA access).\n",
+                device.c_str());
+        return false;
+    }
+
+    printf("[+] Successfully initialized VMM\n");
+
+    if (!VMMDLL_InitializePlugins(hVMM)) {
+        // Not fatal: plugins are only needed for the VFS-based DTB recovery
+        // path, and plain reads and writes work without them.
+        printf("[-] VMMDLL_InitializePlugins failed; DTB recovery may not work\n");
+    }
+
+    return true;
+}
+
+void Shutdown() {
+#ifdef __linux__
+    TerminateMemProcFs();
+#endif
+    if (hVMM) {
+        VMMDLL_Close(hVMM);
+        hVMM = nullptr;
+        printf("[+] VMM closed\n");
+    }
+}
+
+bool InitializeDLL(const std::string& processName, const std::string& dllName) {
+    printf("[+] Process id: %lu\n", (unsigned long)process_id);
+
+    if (!process_id) {
+        // These used to be printf("%s", std::string) -- passing a std::string
+        // through a varargs %s is undefined behaviour and crashed on exactly
+        // the error path that was supposed to explain what went wrong.
+        printf("[!] No attached process (wanted %s)\n", processName.c_str());
+        return false;
+    }
+
+    if (!GetDLLModuleBase(process_id, dllName)) {
+        printf("[!] Failed to get base address/size of %s\n", dllName.c_str());
+        return false;
+    }
+
+    printf("[+] Base address: 0x%llX\n", (unsigned long long)DLL_base_address);
+    printf("[+] Image size:   0x%lX\n", (unsigned long)DLL_size);
+    return true;
+}
+
+VOID cbAddFile(_Inout_ HANDLE h, _In_ LPCSTR uszName, _In_ ULONG64 cb,
+               _In_opt_ PVMMDLL_VFS_FILELIST_EXINFO pExInfo)
+{
+    if (strcmp(uszName, "dtb.txt") == 0) {
+        cbSize = cb;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reads and writes
+// ---------------------------------------------------------------------------
+
+bool vmmdll_read(uint64_t address, void* buffer, size_t size) {
+    if (!hVMM) {
+        return false;
+    }
+    if (!VMMDLL_MemRead(hVMM, (DWORD)process_id, (ULONG64)address, (PBYTE)buffer, (DWORD)size)) {
+        // No error code here on purpose: VMMDLL does not set errno or
+        // SetLastError, so the number that used to be printed was whatever
+        // unrelated call happened to fail last.
+        printf("[!] VMMDLL_MemRead failed at 0x%llX (%zu bytes)\n",
+               (unsigned long long)address, size);
+        return false;
+    }
+    return true;
+}
+
+bool vmmdll_write(uint64_t address, const void* buffer, size_t size) {
+    if (!hVMM) {
+        return false;
+    }
+    if (!VMMDLL_MemWrite(hVMM, (DWORD)process_id, (ULONG64)address,
+                         (PBYTE)const_cast<void*>(buffer), (DWORD)size)) {
+        printf("[!] VMMDLL_MemWrite failed at 0x%llX (%zu bytes)\n",
+               (unsigned long long)address, size);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Scatter reads
+// ---------------------------------------------------------------------------
+
+VMMDLL_SCATTER_HANDLE CreateScatterHandle(uint32_t pid) {
+    if (!hVMM) {
+        return nullptr;
+    }
+    return VMMDLL_Scatter_Initialize(hVMM, pid, VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
+}
+
+void CloseScatterHandle(VMMDLL_SCATTER_HANDLE handle) {
+    if (handle) {
+        VMMDLL_Scatter_CloseHandle(handle);
+    }
+}
+
+void AddScatterRead(VMMDLL_SCATTER_HANDLE handle, uint64_t address, void* buffer,
+                    uint32_t size, uint32_t* bytesRead) {
+    if (!handle) {
+        return;
+    }
+    VMMDLL_Scatter_PrepareEx(handle, address, size, static_cast<PBYTE>(buffer),
+                             reinterpret_cast<PDWORD>(bytesRead));
+}
+
+bool ExecuteScatterRead(VMMDLL_SCATTER_HANDLE handle, uint32_t pid) {
+    if (!handle) {
+        return false;
+    }
+    const bool ok = VMMDLL_Scatter_ExecuteRead(handle) ? true : false;
+    // Clear for reuse. The buffers stay registered until the handle is closed,
+    // which is why callers must keep them alive for the whole scan.
+    VMMDLL_Scatter_Clear(handle, pid, VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// DTB recovery
+// ---------------------------------------------------------------------------
+
+#ifdef _WIN32
+static bool FixCr3()
+{
+    PVMMDLL_MAP_MODULEENTRY module_entry = nullptr;
+    if (VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, (LPSTR)process_name.c_str(),
+                                      &module_entry, 0)) {
+        VMMDLL_MemFree(module_entry);
+        return true;   // nothing to patch
+    }
+
+    if (!VMMDLL_InitializePlugins(hVMM)) {
+        printf("[-] Failed VMMDLL_InitializePlugins call\n");
+        return false;
+    }
+
+    // Give the plugin a moment before reading its virtual files.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    for (int wait = 0; wait < 100; wait++) {
+        BYTE bytes[4] = { 0 };
+        DWORD read = 0;
+        const NTSTATUS nt = VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\progress_percent.txt",
+                                            bytes, 3, &read, 0);
+        if (nt == VMMDLL_STATUS_SUCCESS && atoi((LPSTR)bytes) >= 100) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    VMMDLL_VFS_FILELIST2 fileList;
+    fileList.dwVersion       = VMMDLL_VFS_FILELIST_VERSION;
+    fileList.h               = 0;
+    fileList.pfnAddDirectory = 0;
+    fileList.pfnAddFile      = cbAddFile;
+
+    if (!VMMDLL_VfsListU(hVMM, (LPSTR)"\\misc\\procinfo\\", &fileList)) {
+        return false;
+    }
+
+    const size_t bufferSize = (size_t)cbSize;
+    std::unique_ptr<BYTE[]> bytes(new BYTE[bufferSize]);
+    memset(bytes.get(), 0, bufferSize);
+
+    DWORD read = 0;
+    if (VMMDLL_VfsReadW(hVMM, (LPWSTR)L"\\misc\\procinfo\\dtb.txt", bytes.get(),
+                        (DWORD)(bufferSize - 1), &read, 0) != VMMDLL_STATUS_SUCCESS) {
+        return false;
+    }
+
+    std::vector<uint64_t> possible_dtbs;
+    std::istringstream iss(std::string(reinterpret_cast<char*>(bytes.get()), read));
+    std::string line;
+
+    while (std::getline(iss, line)) {
+        Info info = {};
+        std::istringstream info_ss(line);
+        if (info_ss >> std::hex >> info.index >> std::dec >> info.process_id
+                    >> std::hex >> info.dtb >> info.kernelAddr >> info.name) {
+            if (info.process_id == 0) {
+                possible_dtbs.push_back(info.dtb);
+            }
+            if (process_name.find(info.name) != std::string::npos) {
+                possible_dtbs.push_back(info.dtb);
+            }
+        }
+    }
+
+    for (size_t i = 0; i < possible_dtbs.size(); i++) {
+        VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_PROCESS_DTB | process_id, possible_dtbs[i]);
+        if (VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, (LPSTR)process_name.c_str(),
+                                          &module_entry, 0)) {
+            VMMDLL_MemFree(module_entry);
+            printf("[+] Patched DTB: 0x%llX\n", (unsigned long long)possible_dtbs[i]);
+            return true;
+        }
+    }
+
+    printf("[-] Failed to patch DTB\n");
+    return false;
+}
+#endif // _WIN32
+
+#ifdef __linux__
+static bool FixCr3()
+{
+    // First try direct lookup -- no mount needed if the DTB is already right.
+    PVMMDLL_MAP_MODULEENTRY module_entry = nullptr;
+    if (VMMDLL_Map_GetModuleFromNameU(hVMM, process_id,
+                                      const_cast<char*>(process_name.c_str()),
+                                      &module_entry, 0)) {
+        printf("[+] DTB already correct\n");
+        VMMDLL_MemFree(module_entry);
+        return true;
+    }
+
+    if (!g_config.mountEnabled) {
+        printf("[-] DTB looks wrong and MemProcFS mounting is disabled (--no-mount)\n");
+        return false;
+    }
+
+    if (!InitMemProcFs()) {
+        return false;
+    }
+
+    if (!VMMDLL_InitializePlugins(hVMM)) {
+        printf("[-] Failed VMMDLL_InitializePlugins call\n");
+        TerminateMemProcFs();
         return false;
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-    // Wait for progress
-    for (int wait = 0; wait < 100; wait++)
-    {
-        FILE* progress_file = fopen("/mnt/memproc/misc/procinfo/progress_percent.txt", "r");
-        if (progress_file)
-        {
+    const std::string progressPath = g_config.mountPoint + "/misc/procinfo/progress_percent.txt";
+    const std::string dtbPath      = g_config.mountPoint + "/misc/procinfo/dtb.txt";
+
+    for (int wait = 0; wait < 100; wait++) {
+        FILE* progress = fopen(progressPath.c_str(), "r");
+        if (progress) {
             char bytes[16] = { 0 };
-            if (fread(bytes, 1, 15, progress_file) > 0 && atoi(bytes) >= 100)
-            {
-                fclose(progress_file);
+            const size_t got = fread(bytes, 1, sizeof(bytes) - 1, progress);
+            fclose(progress);
+            if (got > 0 && atoi(bytes) >= 100) {
                 break;
             }
-            fclose(progress_file);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    // Read dtb.txt and collect possible DTBs
-    std::vector<uint64_t> possible_dtbs;
-
-    FILE* dtb_file = fopen("/mnt/memproc/misc/procinfo/dtb.txt", "r");
-    if (!dtb_file)
-    {
-        printf("[!] Failed to open dtb.txt\n");
-
-        terminate_memprocfs();
+    FILE* dtbFile = fopen(dtbPath.c_str(), "r");
+    if (!dtbFile) {
+        printf("[!] Failed to open %s\n", dtbPath.c_str());
+        TerminateMemProcFs();
         return false;
     }
 
+    std::vector<uint64_t> possible_dtbs;
     char line[512];
-    printf("[>] Parsing dtb.txt for PID %d and suspect DTBs...\n", process_id);
+    printf("[>] Parsing dtb.txt for PID %lu and suspect DTBs...\n", (unsigned long)process_id);
 
-    while (fgets(line, sizeof(line), dtb_file))
-    {
-        line[strcspn(line, "\r\n")] = 0;
-        if (strlen(line) == 0) continue;
+    while (fgets(line, sizeof(line), dtbFile)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] == '\0') {
+            continue;
+        }
 
         Info info = {};
-        char name_buf[256] = { 0 };
+        char nameBuf[256] = { 0 };
 
-        if (sscanf(line, "%x %d %llx %llx %255[^\n]",
-            &info.index, &info.process_id,
-            &info.dtb, &info.kernelAddr,
-            name_buf) >= 4)
-        {
-            strncpy(info.name, name_buf, sizeof(info.name) - 1);
+        if (sscanf(line, "%x %u %llx %llx %255[^\n]",
+                   &info.index, &info.process_id,
+                   (unsigned long long*)&info.dtb,
+                   (unsigned long long*)&info.kernelAddr,
+                   nameBuf) >= 4) {
+
+            strncpy(info.name, nameBuf, sizeof(info.name) - 1);
             info.name[sizeof(info.name) - 1] = '\0';
 
-            if (info.process_id == 0)
-            {
+            if (info.process_id == 0) {
                 possible_dtbs.push_back(info.dtb);
-                printf("[DBG] Suspect DTB (PID 0): 0x%llX\n", info.dtb);
             }
-
-            // Check if name matches our process
-            if (strlen(name_buf) > 0 &&
-                (process_name.find(name_buf) != std::string::npos ||
-                    strcasestr(name_buf, process_name.c_str()) != NULL))
-            {
+            if (nameBuf[0] != '\0' &&
+                (process_name.find(nameBuf) != std::string::npos ||
+                 strcasestr(nameBuf, process_name.c_str()) != nullptr)) {
                 possible_dtbs.push_back(info.dtb);
-                printf("[DBG] Name match DTB (%s): 0x%llX\n", name_buf, info.dtb);
             }
-
-            // Also check if this is our PID
-            if (info.process_id == (uint32_t)process_id)
-            {
+            if (info.process_id == process_id) {
                 possible_dtbs.push_back(info.dtb);
-                printf("[DBG] PID match DTB: 0x%llX\n", info.dtb);
             }
         }
     }
-    fclose(dtb_file);
+    fclose(dtbFile);
 
     printf("[>] Found %zu possible DTBs to try\n", possible_dtbs.size());
 
-    // Try each DTB
-    for (size_t i = 0; i < possible_dtbs.size(); i++)
-    {
-        ULONG64 dtb = possible_dtbs[i];
-        printf("[>] Trying DTB 0x%llX...\n", dtb);
+    for (size_t i = 0; i < possible_dtbs.size(); i++) {
+        const ULONG64 dtb = possible_dtbs[i];
+        printf("[>] Trying DTB 0x%llX...\n", (unsigned long long)dtb);
 
         VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_PROCESS_DTB | process_id, dtb);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_REFRESH_ALL, 1);
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-        if (VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, const_cast<char*>(process_name.c_str()), &module_entry, NULL))
-        {
-            printf("[+] Patched DTB: 0x%llX - Found %s!\n", dtb, process_name.c_str());
+        if (VMMDLL_Map_GetModuleFromNameU(hVMM, process_id,
+                                          const_cast<char*>(process_name.c_str()),
+                                          &module_entry, 0)) {
+            printf("[+] Patched DTB 0x%llX - found %s\n",
+                   (unsigned long long)dtb, process_name.c_str());
             VMMDLL_MemFree(module_entry);
-
-            terminate_memprocfs();
+            TerminateMemProcFs();
             return true;
         }
     }
 
     printf("[-] Failed to patch DTB\n");
-
-    terminate_memprocfs();
+    TerminateMemProcFs();
     return false;
 }
-#endif
+#endif // __linux__
 
-bool get_process_base_address(const std::string process_name, const uint32_t& process_id)
+// ---------------------------------------------------------------------------
+// Process / module lookup
+// ---------------------------------------------------------------------------
+
+uint32_t get_process_id(const std::string& name)
 {
-    PVMMDLL_MAP_MODULEENTRY pModuleEntryExplorer;
-
-    bool result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, const_cast<char*>(process_name.c_str()), &pModuleEntryExplorer, NULL);
-
-    if (result) {
-        process_size = pModuleEntryExplorer->cbImageSize;
-        process_base_address = pModuleEntryExplorer->vaBase;
-        VMMDLL_MemFree(pModuleEntryExplorer);
-        return true;
-    }
-
-    // If not found, fix DTB and try again
-    if (!FixCr3_1())
-        return false;
-
-    result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, const_cast<char*>(process_name.c_str()), &pModuleEntryExplorer, NULL);
-
-    if (result) {
-        process_size = pModuleEntryExplorer->cbImageSize;
-        process_base_address = pModuleEntryExplorer->vaBase;
-        VMMDLL_MemFree(pModuleEntryExplorer);
-        return true;
-    }
-
-    return false;
-}
-
-bool GetDLLModuleBase(const uint32_t& process_id, const std::string DLL_Name)
-{
-    PVMMDLL_MAP_MODULEENTRY pModuleEntryExplorer;
-
-    bool result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, const_cast<char*>(DLL_Name.c_str()), &pModuleEntryExplorer, VMMDLL_MODULE_FLAG_NORMAL);
-
-    if (result) {
-        DLL_base_address = pModuleEntryExplorer->vaBase;
-        DLL_size = pModuleEntryExplorer->cbImageSize;
-        VMMDLL_MemFree(pModuleEntryExplorer);
-
-        printf("[+] DLL %s: Base=0x%llX, Size=0x%llX\n", DLL_Name.c_str(), DLL_base_address, DLL_size);
-        return true;
-    }
-
-    // If not found, fix DTB and try again
-    if (!FixCr3_1())
-        return false;
-
-    result = VMMDLL_Map_GetModuleFromNameU(hVMM, process_id, const_cast<char*>(DLL_Name.c_str()), &pModuleEntryExplorer, VMMDLL_MODULE_FLAG_NORMAL);
-
-    if (result) {
-        DLL_base_address = pModuleEntryExplorer->vaBase;
-        DLL_size = pModuleEntryExplorer->cbImageSize;
-        VMMDLL_MemFree(pModuleEntryExplorer);
-
-        printf("[+] DLL %s: Base=0x%llX, Size=0x%llX\n", DLL_Name.c_str(), DLL_base_address, DLL_size);
-        return true;
-    }
-
-    printf("[!] Failed to find %s\n", DLL_Name.c_str());
-    return false;
-}
-
-#ifdef _WIN32
-uintptr_t PatternScan1(void* module, const char* signature, const char* sectionName, int skip)
-{
-    static auto pattern_to_byte = [](const char* pattern) {
-        auto bytes = std::vector<int>{};
-        auto start = const_cast<char*>(pattern);
-        auto end = const_cast<char*>(pattern) + strlen(pattern);
-
-        for (auto current = start; current < end; ++current) {
-            if (*current == '?') {
-                ++current;
-                if (*current == '?')
-                    ++current;
-                bytes.push_back(-1);
-            }
-            else {
-                bytes.push_back(strtoul(current, &current, 16));
-            }
-        }
-        return bytes;
-    };
-
-    auto dosHeader = (PIMAGE_DOS_HEADER)module;
-    auto ntHeaders = (PIMAGE_NT_HEADERS)((std::uint8_t*)module + dosHeader->e_lfanew);
-    auto patternBytes = pattern_to_byte(signature);
-    auto s = patternBytes.size();
-    auto d = patternBytes.data();
-    int currentskip = 0;
-
-    if (!sectionName) {
-        auto sizeOfImage = ntHeaders->OptionalHeader.SizeOfImage;
-        auto scanBytes = reinterpret_cast<std::uint8_t*>(module);
-
-        for (auto i = 0ul; i < sizeOfImage - s; ++i) {
-            if (currentskip < skip) {
-                currentskip++;
-                continue;
-            }
-
-            bool found = true;
-            for (auto j = 0ul; j < s; ++j) {
-                if (scanBytes[i + j] != d[j] && d[j] != -1) {
-                    found = false;
-                    break;
-                }
-            }
-            if (found) {
-                return (uintptr_t)&scanBytes[i];
-            }
-        }
-    }
-    else {
-        auto sectionHeader = IMAGE_FIRST_SECTION(ntHeaders);
-        for (WORD i = 0; i < ntHeaders->FileHeader.NumberOfSections; ++i, ++sectionHeader) {
-            if (strncmp(reinterpret_cast<const char*>(sectionHeader->Name), sectionName, IMAGE_SIZEOF_SHORT_NAME) == 0) {
-                auto sectionStart = reinterpret_cast<std::uint8_t*>(module) + sectionHeader->VirtualAddress;
-                auto sectionSize = sectionHeader->Misc.VirtualSize;
-
-                for (auto j = 0ul; j < sectionSize - s; ++j) {
-                    bool found = true;
-                    for (auto k = 0ul; k < s; ++k) {
-                        if (sectionStart[j + k] != d[k] && d[k] != -1) {
-                            found = false;
-                            break;
-                        }
-                    }
-                    if (found) {
-                        if (currentskip < skip) {
-                            currentskip++;
-                            continue;
-                        }
-                        return (uintptr_t)&sectionStart[j];
-                    }
-                }
-                break; // Stop searching if section is found
-            }
-        }
-    }
-    return (uintptr_t)nullptr;
-}
-#endif
-
-uintptr_t PatternScan(const char* signature)
-{
-    static auto pattern_to_byte = [](const char* pattern) {
-        auto bytes = std::vector<int>{};
-        auto start = const_cast<char*>(pattern);
-        auto end = const_cast<char*>(pattern) + strlen(pattern);
-
-        for (auto current = start; current < end; ++current) {
-            if (*current == '?') {
-                ++current;
-                if (*current == '?')
-                    ++current;
-                bytes.push_back(-1);
-            }
-            else {
-                bytes.push_back(strtoul(current, &current, 16));
-            }
-        }
-        return bytes;
-    };
-
-    uintptr_t moduleBase = DLL_base_address;
-    size_t moduleSize = DLL_size;
-
-    auto patternBytes = pattern_to_byte(signature);
-    auto scanSize = patternBytes.size();
-    auto patternData = patternBytes.data();
-
-    // Read the entire module into buffer
-    std::vector<uint8_t> moduleBuffer(moduleSize);
-    if (!VMMDLL_MemReadEx(hVMM, process_id, moduleBase, moduleBuffer.data(), moduleSize, 0, VMMDLL_FLAG_NOCACHE)) {
-        printf("[!] PatternScan: Failed to read DLL memory\n");
+    if (!hVMM) {
         return 0;
     }
 
-
-    printf("[>] Scanning pattern in 0x%zX bytes...\n", moduleSize);
-
-    for (size_t i = 0; i < moduleSize - scanSize; ++i)
-    {
-        bool found = true;
-
-        for (size_t j = 0; j < scanSize; ++j)
-        {
-            // FIX: Compare against the actual buffer we read
-            if (patternData[j] != -1 && patternData[j] != moduleBuffer[i + j])
-            {
-                found = false;
-                break;
-            }
-        }
-
-        if (found)
-        {
-            uintptr_t found_address = moduleBase + i;
-            uintptr_t relative_address = found_address - DLL_base_address;
-
-            printf("[+] Pattern found:\n");
-            printf("    Absolute: 0x%llX\n", found_address);
-            printf("    Relative: 0x%llX\n", relative_address);
-
-            // Debug: show what we found
-            printf("    Bytes at location: ");
-            for (size_t k = 0; k < (std::min)(scanSize, size_t(16)); k++) {
-                printf("%02X ", moduleBuffer[i + k]);
-            }
-            printf("\n");
-
-            return found_address; // Return absolute for now
-        }
+    DWORD dwPID = 0;
+    if (!VMMDLL_PidGetFromName(hVMM, const_cast<char*>(name.c_str()), &dwPID)) {
+        printf("[!] VMMDLL_PidGetFromName failed for %s\n", name.c_str());
+        return 0;
     }
-
-    printf("[-] Pattern not found in module\n");
-    return 0;
+    return dwPID;
 }
 
-std::vector<int> GetPidListFromName(std::string name)
+bool get_process_base_address(const std::string& name, const uint32_t& pid)
 {
-    PVMMDLL_PROCESS_INFORMATION process_info = NULL;
-    DWORD total_processes = 0;
-    std::vector<int> list = { };
+    if (!hVMM) {
+        return false;
+    }
 
-    if (!VMMDLL_ProcessGetInformationAll(hVMM, &process_info, &total_processes))
-    {
+    PVMMDLL_MAP_MODULEENTRY entry = nullptr;
+
+    if (VMMDLL_Map_GetModuleFromNameU(hVMM, pid, const_cast<char*>(name.c_str()),
+                                      &entry, 0)) {
+        process_size         = entry->cbImageSize;
+        process_base_address = entry->vaBase;
+        VMMDLL_MemFree(entry);
+        return true;
+    }
+
+    // If not found, fix the DTB and try again.
+    if (!FixCr3()) {
+        return false;
+    }
+
+    if (VMMDLL_Map_GetModuleFromNameU(hVMM, pid, const_cast<char*>(name.c_str()),
+                                      &entry, 0)) {
+        process_size         = entry->cbImageSize;
+        process_base_address = entry->vaBase;
+        VMMDLL_MemFree(entry);
+        return true;
+    }
+
+    return false;
+}
+
+bool GetDLLModuleBase(const uint32_t& pid, const std::string& dllName)
+{
+    if (!hVMM) {
+        return false;
+    }
+
+    PVMMDLL_MAP_MODULEENTRY entry = nullptr;
+
+    if (VMMDLL_Map_GetModuleFromNameU(hVMM, pid, const_cast<char*>(dllName.c_str()),
+                                      &entry, VMMDLL_MODULE_FLAG_NORMAL)) {
+        DLL_base_address = entry->vaBase;
+        DLL_size         = entry->cbImageSize;
+        VMMDLL_MemFree(entry);
+        printf("[+] DLL %s: Base=0x%llX, Size=0x%lX\n",
+               dllName.c_str(), (unsigned long long)DLL_base_address,
+               (unsigned long)DLL_size);
+        return true;
+    }
+
+    if (!FixCr3()) {
+        return false;
+    }
+
+    if (VMMDLL_Map_GetModuleFromNameU(hVMM, pid, const_cast<char*>(dllName.c_str()),
+                                      &entry, VMMDLL_MODULE_FLAG_NORMAL)) {
+        DLL_base_address = entry->vaBase;
+        DLL_size         = entry->cbImageSize;
+        VMMDLL_MemFree(entry);
+        printf("[+] DLL %s: Base=0x%llX, Size=0x%lX\n",
+               dllName.c_str(), (unsigned long long)DLL_base_address,
+               (unsigned long)DLL_size);
+        return true;
+    }
+
+    printf("[!] Failed to find %s\n", dllName.c_str());
+    return false;
+}
+
+std::vector<int> GetPidListFromName(const std::string& name)
+{
+    std::vector<int> list;
+
+    if (!hVMM) {
+        return list;
+    }
+
+    PVMMDLL_PROCESS_INFORMATION info = nullptr;
+    DWORD total = 0;
+
+    if (!VMMDLL_ProcessGetInformationAll(hVMM, &info, &total)) {
         printf("[!] Failed to get process list\n");
         return list;
     }
 
-    for (size_t i = 0; i < total_processes; i++)
-    {
-        auto process = process_info[i];
-        if (strstr(process.szNameLong, name.c_str()))
-            list.push_back(process.dwPID);
+    for (DWORD i = 0; i < total; i++) {
+        if (strstr(info[i].szNameLong, name.c_str())) {
+            list.push_back((int)info[i].dwPID);
+        }
     }
 
+    // The VMM owns this buffer and it was never released here.
+    VMMDLL_MemFree(info);
     return list;
 }
 
-#ifdef _WIN32
-
-#endif
-
-
 void DebugAllModules()
 {
-    PVMMDLL_MAP_MODULE pModuleMap = NULL;
-    if (!VMMDLL_Map_GetModuleU(hVMM, process_id, &pModuleMap, NULL)) {
+    if (!hVMM) {
+        return;
+    }
+
+    PVMMDLL_MAP_MODULE pModuleMap = nullptr;
+    if (!VMMDLL_Map_GetModuleU(hVMM, process_id, &pModuleMap, 0)) {
         printf("[!] Failed to get module list\n");
         return;
     }
 
-    printf("\n[>] ALL MODULES IN PROCESS %d:\n", process_id);
+    printf("\n[>] Modules in process %lu:\n", (unsigned long)process_id);
     printf("=================================================================\n");
 
     for (DWORD i = 0; i < pModuleMap->cMap; i++) {
-        PVMMDLL_MAP_MODULEENTRY pEntry = pModuleMap->pMap + i;
-
-        printf("[%3d] 0x%-14llX 0x%-12llX %s\n",
-               i,
-               pEntry->vaBase,
-               pEntry->cbImageSize,
-               pEntry->uszText);
+        const PVMMDLL_MAP_MODULEENTRY entry = pModuleMap->pMap + i;
+        printf("[%3lu] 0x%-14llX 0x%-12lX %s\n",
+               (unsigned long)i,
+               (unsigned long long)entry->vaBase,
+               (unsigned long)entry->cbImageSize,
+               entry->uszText);
     }
 
-    printf("[+] Total modules: %d\n", pModuleMap->cMap);
+    printf("[+] Total modules: %lu\n", (unsigned long)pModuleMap->cMap);
 
-    // Find potential game executables
-    printf("\n[>] POTENTIAL GAME EXECUTABLES:\n");
+    // Large mapped images, which are usually the main executable. This used to
+    // hardcode the module names of one specific game.
+    printf("\n[>] Largest mapped images:\n");
     printf("=================================================================\n");
 
     for (DWORD i = 0; i < pModuleMap->cMap; i++) {
-        PVMMDLL_MAP_MODULEENTRY pEntry = pModuleMap->pMap + i;
-        std::string name = pEntry->uszText;
-
-        // Look for game-related names
-        if (name.find(".exe") != std::string::npos ||
-            name.find("r5apex") != std::string::npos ||
-            name.find("apex") != std::string::npos ||
-            name.find("R5") != std::string::npos ||
-            pEntry->cbImageSize > 0x1000000) {  // > 16MB
-
-            printf("  -> 0x%-14llX 0x%-12llX (%llu MB) %s\n",
-                   pEntry->vaBase,
-                   pEntry->cbImageSize,
-                   pEntry->cbImageSize / (1024 * 1024),
-                   pEntry->uszText);
+        const PVMMDLL_MAP_MODULEENTRY entry = pModuleMap->pMap + i;
+        if (entry->cbImageSize > 0x1000000) {   // > 16 MB
+            printf("  -> 0x%-14llX 0x%-12lX (%llu MB) %s\n",
+                   (unsigned long long)entry->vaBase,
+                   (unsigned long)entry->cbImageSize,
+                   (unsigned long long)(entry->cbImageSize / (1024 * 1024)),
+                   entry->uszText);
         }
     }
 
     VMMDLL_MemFree(pModuleMap);
 }
 
+// ---------------------------------------------------------------------------
+// Pattern scanning
+// ---------------------------------------------------------------------------
 
+namespace {
 
-void UpdateKeys()
-{
-    uint8_t previous_key_state_bitmap[64] = { 0 };
-    memcpy(previous_key_state_bitmap, state_bitmap, 64);
-
-    VMMDLL_MemReadEx(hVMM, win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY, gafAsyncKeyStateExport, (PBYTE)&state_bitmap, 64, NULL, VMMDLL_FLAG_NOCACHE);
-    for (int vk = 0; vk < 256; ++vk)
-        if ((state_bitmap[(vk * 2 / 8)] & 1 << vk % 4 * 2) && !(previous_key_state_bitmap[(vk * 2 / 8)] & 1 << vk % 4 * 2))
-            previous_state_bitmap[vk / 8] |= 1 << vk % 8;
-}
-
-bool IsKeyDown(uint32_t virtual_key_code)
-{
-    if (gafAsyncKeyStateExport < 0x7FFFFFFFFFFF)
-        return false;
-    if (std::chrono::system_clock::now() - start > std::chrono::milliseconds(5))
-    {
-        UpdateKeys();
-        start = std::chrono::system_clock::now();
+// "48 8B ?? 89" -> { 0x48, 0x8B, -1, 0x89 }
+std::vector<int> PatternToBytes(const char* pattern) {
+    std::vector<int> bytes;
+    if (!pattern) {
+        return bytes;
     }
-    return state_bitmap[(virtual_key_code * 2 / 8)] & 1 << virtual_key_code % 4 * 2;
+
+    const char* current = pattern;
+    while (*current) {
+        if (*current == ' ') {
+            current++;
+            continue;
+        }
+        if (*current == '?') {
+            current++;
+            if (*current == '?') {
+                current++;
+            }
+            bytes.push_back(-1);
+            continue;
+        }
+
+        char* end = nullptr;
+        const long value = strtol(current, &end, 16);
+        if (end == current) {
+            break;   // not parseable, stop rather than loop forever
+        }
+        bytes.push_back((int)(value & 0xFF));
+        current = end;
+    }
+    return bytes;
 }
 
+} // namespace
+
+#ifdef _WIN32
+uintptr_t PatternScan1(void* module, const char* signature, const char* sectionName, int skip)
+{
+    if (!module) {
+        return 0;
+    }
+
+    const std::vector<int> patternBytes = PatternToBytes(signature);
+    const size_t patternSize = patternBytes.size();
+    if (patternSize == 0) {
+        return 0;
+    }
+
+    const int* pattern = patternBytes.data();
+    int currentSkip = 0;
+
+    auto dosHeader = (PIMAGE_DOS_HEADER)module;
+    auto ntHeaders = (PIMAGE_NT_HEADERS)((std::uint8_t*)module + dosHeader->e_lfanew);
+
+    if (!sectionName) {
+        const size_t sizeOfImage = ntHeaders->OptionalHeader.SizeOfImage;
+        // Unsigned underflow guard: sizeOfImage - patternSize wraps to a huge
+        // value when the pattern is longer than the image.
+        if (sizeOfImage < patternSize) {
+            return 0;
+        }
+        auto scanBytes = reinterpret_cast<std::uint8_t*>(module);
+
+        for (size_t i = 0; i <= sizeOfImage - patternSize; ++i) {
+            bool found = true;
+            for (size_t j = 0; j < patternSize; ++j) {
+                if (pattern[j] != -1 && scanBytes[i + j] != (std::uint8_t)pattern[j]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) {
+                if (currentSkip < skip) {
+                    currentSkip++;
+                    continue;
+                }
+                return (uintptr_t)&scanBytes[i];
+            }
+        }
+        return 0;
+    }
+
+    auto sectionHeader = IMAGE_FIRST_SECTION(ntHeaders);
+    for (WORD i = 0; i < ntHeaders->FileHeader.NumberOfSections; ++i, ++sectionHeader) {
+        if (strncmp(reinterpret_cast<const char*>(sectionHeader->Name), sectionName,
+                    IMAGE_SIZEOF_SHORT_NAME) != 0) {
+            continue;
+        }
+
+        auto sectionStart = reinterpret_cast<std::uint8_t*>(module) + sectionHeader->VirtualAddress;
+        const size_t sectionSize = sectionHeader->Misc.VirtualSize;
+        if (sectionSize < patternSize) {
+            return 0;
+        }
+
+        for (size_t j = 0; j <= sectionSize - patternSize; ++j) {
+            bool found = true;
+            for (size_t k = 0; k < patternSize; ++k) {
+                if (pattern[k] != -1 && sectionStart[j + k] != (std::uint8_t)pattern[k]) {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) {
+                if (currentSkip < skip) {
+                    currentSkip++;
+                    continue;
+                }
+                return (uintptr_t)&sectionStart[j];
+            }
+        }
+        break;
+    }
+    return 0;
+}
+#endif // _WIN32
+
+uintptr_t PatternScan(const char* signature)
+{
+    const uintptr_t moduleBase = (uintptr_t)DLL_base_address;
+    const size_t    moduleSize = (size_t)DLL_size;
+
+    if (!moduleBase || moduleSize == 0) {
+        printf("[!] PatternScan: no DLL selected (call GetDLLModuleBase first)\n");
+        return 0;
+    }
+
+    const std::vector<int> patternBytes = PatternToBytes(signature);
+    const size_t patternSize = patternBytes.size();
+
+    if (patternSize == 0) {
+        printf("[!] PatternScan: empty or malformed signature\n");
+        return 0;
+    }
+    // Guard the unsigned subtraction below.
+    if (moduleSize < patternSize) {
+        printf("[!] PatternScan: signature is longer than the module\n");
+        return 0;
+    }
+
+    std::vector<uint8_t> moduleBuffer(moduleSize);
+    if (!VMMDLL_MemReadEx(hVMM, process_id, moduleBase, moduleBuffer.data(),
+                          (DWORD)moduleSize, NULL, VMMDLL_FLAG_NOCACHE)) {
+        printf("[!] PatternScan: failed to read module memory\n");
+        return 0;
+    }
+
+    printf("[>] Scanning pattern in 0x%zX bytes...\n", moduleSize);
+
+    const int* pattern = patternBytes.data();
+
+    for (size_t i = 0; i <= moduleSize - patternSize; ++i) {
+        bool found = true;
+        for (size_t j = 0; j < patternSize; ++j) {
+            if (pattern[j] != -1 && moduleBuffer[i + j] != (uint8_t)pattern[j]) {
+                found = false;
+                break;
+            }
+        }
+
+        if (found) {
+            const uintptr_t address = moduleBase + i;
+            printf("[+] Pattern found at 0x%llX (module + 0x%zX)\n",
+                   (unsigned long long)address, i);
+            return address;
+        }
+    }
+
+    printf("[-] Pattern not found in module\n");
+    return 0;
+}

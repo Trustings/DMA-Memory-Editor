@@ -1,72 +1,66 @@
 #pragma once
-#ifdef _WIN32
-#include <Windows.h>
-#define HAVE_STRUCT_TIMESPEC
-#endif
+
+#include "memory.hpp"
 
 #ifdef __linux__
 #include "debugger.hpp"
 #endif
 
-#include "memory.hpp"
-#include <stdbool.h>
-#include "menu.hpp"
-#include <stdatomic.h>
-#include <pthread.h>
+#include <atomic>
+#include <cstdint>
+#include <vector>
 
+// Requests raised by the UI thread and serviced by the background worker.
+// Setting one of these should be followed by Core_Notify() so the worker wakes
+// immediately instead of waiting out its poll interval.
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-extern pthread_mutex_t mutex0;
-extern bool has_lock;
-
-struct state0{
-
-    //process tab state
-
-    std::atomic<bool> firstTimeInTab;
-    std::atomic<bool> firstTimeInTab_Completed;
-
-    std::atomic<bool> ButtonRefreshProcessClicked;
-
-    std::atomic<bool> AttachProcessButtonClicked;
-
-    std::atomic<bool> State0End;
+struct state0 {
+    // Process tab
+    std::atomic<bool> firstTimeInTab{false};
+    std::atomic<bool> firstTimeInTab_Completed{false};
+    std::atomic<bool> ButtonRefreshProcessClicked{false};
+    std::atomic<bool> AttachProcessButtonClicked{false};
+    std::atomic<bool> State0End{false};
 };
 
 struct state1 {
-
-   // mem_search_render tab state
-
-    std::atomic<bool> State1End;
-
-    std::atomic<int> currentPage;
-
-    std::atomic<bool> FirstMemorySearch;
-
-    std::atomic<bool> g_isFirstScan;
-
-    std::atomic<bool> g_SearchResultReset;
-
-    std::atomic<bool> FindAccessesesClicked;
-
-    std::atomic<uint64_t> strtol_result;
-
-    std::atomic<bool> wp_loop_completed;
-
+    // Memory search tab
+    std::atomic<bool>     State1End{false};
+    std::atomic<int>      currentPage{0};
+    std::atomic<bool>     FirstMemorySearch{false};
+    std::atomic<bool>     NextMemorySearch{false};
+    std::atomic<bool>     g_isFirstScan{true};
+    std::atomic<bool>     g_SearchResultReset{false};
+    std::atomic<bool>     FindAccessesesClicked{false};
+    std::atomic<uint64_t> watchAddress{0};
+    std::atomic<bool>     wp_loop_completed{false};
 };
 
 extern struct state0 state0_s;
 extern struct state1 state1_s;
 
-void* sync_operations(void* arg);
+// Index of the process selected in the UI, or -1.
+extern std::atomic<int> selectedProcessIndex;
 
-int start_mutex_lock();
-int start_mutex_try_lock();
-int end_mutex_lock();
+// ---------------------------------------------------------------------------
+// Worker lifecycle
+// ---------------------------------------------------------------------------
 
-#ifdef __cplusplus
-}
-#endif
+// Start the background worker. Long operations (process enumeration, memory
+// scans, watchpoint loops) run here so the render thread never blocks.
+void Core_Start();
+
+// Ask the worker to finish and join it.
+void Core_Stop();
+
+// Wake the worker after raising a request flag.
+void Core_Notify();
+
+// ---------------------------------------------------------------------------
+// Watchpoint hit list
+// ---------------------------------------------------------------------------
+// Written by the worker, read by the UI, so it goes through a snapshot rather
+// than exposing the raw array.
+
+size_t Watchpoints_Snapshot(std::vector<uint64_t>& out);
+void   Watchpoints_Clear();

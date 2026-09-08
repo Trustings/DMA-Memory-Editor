@@ -42,10 +42,10 @@
     <ClCompile Include="gui\imgui\imgui_draw.cpp">
       <Filter>gui\imgui</Filter>
     </ClCompile>
-    <ClCompile Include="gui\imgui\imgui_impl_glfw.cpp">
+    <ClCompile Include="gui\imgui\backends\imgui_impl_glfw.cpp">
       <Filter>gui\imgui</Filter>
     </ClCompile>
-    <ClCompile Include="gui\imgui\imgui_impl_vulkan.cpp">
+    <ClCompile Include="gui\imgui\backends\imgui_impl_vulkan.cpp">
       <Filter>gui\imgui</Filter>
     </ClCompile>
     <ClCompile Include="gui\imgui\imgui_tables.cpp">
@@ -84,10 +84,10 @@
     <ClInclude Include="gui\imgui\imgui.h">
       <Filter>gui\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="gui\imgui\imgui_impl_glfw.h">
+    <ClInclude Include="gui\imgui\backends\imgui_impl_glfw.h">
       <Filter>gui\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="gui\imgui\imgui_impl_vulkan.h">
+    <ClInclude Include="gui\imgui\backends\imgui_impl_vulkan.h">
       <Filter>gui\imgui</Filter>
     </ClInclude>
     <ClInclude Include="gui\imgui\imgui_internal.h">
