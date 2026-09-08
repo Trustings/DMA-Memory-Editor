@@ -71,10 +71,10 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>.\core;.\gui;.\gui\imgui;.\gui\render;.\include;.\memory;.\memory\list;.\memory\region;.\memory\search;.\include\pthread-win;$(IncludePath)</IncludePath>
+    <IncludePath>.\core;.\gui;.\gui\imgui;.\gui\imgui\backends;.\gui\render;.\include;.\memory;.\memory\list;.\memory\region;.\memory\search;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>.\core;.\gui;.\gui\imgui;.\gui\render;.\include;.\include\pthread-win;.\memory;.\memory\list;.\memory\region;.\memory\search;$(IncludePath)</IncludePath>
+    <IncludePath>.\core;.\gui;.\gui\imgui;.\gui\imgui\backends;.\gui\render;.\include;.\memory;.\memory\list;.\memory\region;.\memory\search;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -106,7 +106,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GLFW_INCLUDE_NONE;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
@@ -115,7 +115,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>.\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>vmm.lib;leechcore.lib;glfw3.lib;vulkan-1.lib;pthreadVC2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vmm.lib;leechcore.lib;glfw3.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -124,7 +124,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GLFW_INCLUDE_NONE;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
@@ -133,16 +133,17 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>.\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>vmm.lib;leechcore.lib;glfw3.lib;vulkan-1.lib;pthreadVC2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vmm.lib;leechcore.lib;glfw3.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="core\core.cpp" />
+    <ClCompile Include="core\config.cpp" />
     <ClCompile Include="gui\imgui\imgui.cpp" />
     <ClCompile Include="gui\imgui\imgui_demo.cpp" />
     <ClCompile Include="gui\imgui\imgui_draw.cpp" />
-    <ClCompile Include="gui\imgui\imgui_impl_glfw.cpp" />
-    <ClCompile Include="gui\imgui\imgui_impl_vulkan.cpp" />
+    <ClCompile Include="gui\imgui\backends\imgui_impl_glfw.cpp" />
+    <ClCompile Include="gui\imgui\backends\imgui_impl_vulkan.cpp" />
     <ClCompile Include="gui\imgui\imgui_tables.cpp" />
     <ClCompile Include="gui\imgui\imgui_widgets.cpp" />
     <ClCompile Include="gui\menu.cpp" />
@@ -155,10 +156,11 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="core\core.hpp" />
+    <ClInclude Include="core\config.hpp" />
     <ClInclude Include="gui\imgui\imconfig.h" />
     <ClInclude Include="gui\imgui\imgui.h" />
-    <ClInclude Include="gui\imgui\imgui_impl_glfw.h" />
-    <ClInclude Include="gui\imgui\imgui_impl_vulkan.h" />
+    <ClInclude Include="gui\imgui\backends\imgui_impl_glfw.h" />
+    <ClInclude Include="gui\imgui\backends\imgui_impl_vulkan.h" />
     <ClInclude Include="gui\imgui\imgui_internal.h" />
     <ClInclude Include="gui\imgui\imstb_rectpack.h" />
     <ClInclude Include="gui\imgui\imstb_textedit.h" />

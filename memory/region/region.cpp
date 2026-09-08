@@ -1,41 +1,45 @@
 #include "region.hpp"
 
-// Convert VMM protection flags to string
+#include <algorithm>
+
+// Windows page protection constants, defined locally on Linux where there is
+// no Windows.h to provide them. These describe the *guest*, so they are the
+// Windows values on both hosts.
+namespace {
+
+const uint32_t PROT_NOACCESS          = 0x001;
+const uint32_t PROT_READONLY          = 0x002;
+const uint32_t PROT_READWRITE         = 0x004;
+const uint32_t PROT_WRITECOPY         = 0x008;
+const uint32_t PROT_EXECUTE           = 0x010;
+const uint32_t PROT_EXECUTE_READ      = 0x020;
+const uint32_t PROT_EXECUTE_READWRITE = 0x040;
+const uint32_t PROT_EXECUTE_WRITECOPY = 0x080;
+const uint32_t PROT_GUARD             = 0x100;
+const uint32_t PROT_NOCACHE           = 0x200;
+const uint32_t PROT_WRITECOMBINE      = 0x400;
+
+} // namespace
+
 std::string ProtectToString(uint32_t protect) {
     std::string result;
 
-    // Memory protection constants from Windows
-    #ifdef __linux__
-    const uint32_t PAGE_NOACCESS = 0x01;
-    const uint32_t PAGE_READONLY = 0x02;
-    const uint32_t PAGE_READWRITE = 0x04;
-    const uint32_t PAGE_WRITECOPY = 0x08;
-    const uint32_t PAGE_EXECUTE = 0x10;
-    const uint32_t PAGE_EXECUTE_READ = 0x20;
-    const uint32_t PAGE_EXECUTE_READWRITE = 0x40;
-    const uint32_t PAGE_EXECUTE_WRITECOPY = 0x80;
-    const uint32_t PAGE_GUARD = 0x100;
-    const uint32_t PAGE_NOCACHE = 0x200;
-    const uint32_t PAGE_WRITECOMBINE = 0x400;
-    #endif
-
-    if (protect & PAGE_NOACCESS) result += "NOACCESS ";
-    if (protect & PAGE_READONLY) result += "R ";
-    if (protect & PAGE_READWRITE) result += "RW ";
-    if (protect & PAGE_WRITECOPY) result += "RW (copy) ";
-    if (protect & PAGE_EXECUTE) result += "X ";
-    if (protect & PAGE_EXECUTE_READ) result += "RX ";
-    if (protect & PAGE_EXECUTE_READWRITE) result += "RWX ";
-    if (protect & PAGE_EXECUTE_WRITECOPY) result += "RWX (copy) ";
-    if (protect & PAGE_GUARD) result += "GUARD ";
-    if (protect & PAGE_NOCACHE) result += "NOCACHE ";
-    if (protect & PAGE_WRITECOMBINE) result += "WRITECOMBINE ";
+    if (protect & PROT_NOACCESS)          result += "NOACCESS ";
+    if (protect & PROT_READONLY)          result += "R ";
+    if (protect & PROT_READWRITE)         result += "RW ";
+    if (protect & PROT_WRITECOPY)         result += "RW (copy) ";
+    if (protect & PROT_EXECUTE)           result += "X ";
+    if (protect & PROT_EXECUTE_READ)      result += "RX ";
+    if (protect & PROT_EXECUTE_READWRITE) result += "RWX ";
+    if (protect & PROT_EXECUTE_WRITECOPY) result += "RWX (copy) ";
+    if (protect & PROT_GUARD)             result += "GUARD ";
+    if (protect & PROT_NOCACHE)           result += "NOCACHE ";
+    if (protect & PROT_WRITECOMBINE)      result += "WRITECOMBINE ";
 
     return result.empty() ? "UNKNOWN" : result;
 }
 
-// Get all memory regions using VAD (Virtual Address Descriptor)
-bool GetProcessMemoryRegions(DWORD pid, std::vector<MemoryRegion>& regions) {
+bool GetProcessMemoryRegions(DWORD pid, std::vector<MemoryRegion>& regions, bool quiet) {
     regions.clear();
 
     if (!hVMM || !pid) {
@@ -45,57 +49,55 @@ bool GetProcessMemoryRegions(DWORD pid, std::vector<MemoryRegion>& regions) {
 
     PVMMDLL_MAP_VAD pVadMap = NULL;
 
-    // Get VAD map with module identification enabled
-    if (!VMMDLL_Map_GetVadU(hVMM, pid, true, &pVadMap)) {
-        printf("[!] Failed to get VAD map for PID %d\n", pid);
+    // Get VAD map with module identification enabled.
+    if (!VMMDLL_Map_GetVadU(hVMM, pid, 1, &pVadMap)) {
+        printf("[!] Failed to get VAD map for PID %lu\n", (unsigned long)pid);
         return false;
     }
 
-    printf("[+] Got VAD map with %d entries\n", pVadMap->cMap);
+    if (!quiet) {
+        printf("[+] Got VAD map with %lu entries\n", (unsigned long)pVadMap->cMap);
+    }
+
+    regions.reserve(pVadMap->cMap);
 
     for (DWORD i = 0; i < pVadMap->cMap; i++) {
-        PVMMDLL_MAP_VADENTRY pEntry = &pVadMap->pMap[i];
+        const PVMMDLL_MAP_VADENTRY pEntry = &pVadMap->pMap[i];
 
         MemoryRegion region;
-        region.base = pEntry->vaStart;
-        region.size = pEntry->vaEnd - pEntry->vaStart;
+        region.base    = pEntry->vaStart;
+        region.size    = (pEntry->vaEnd > pEntry->vaStart) ? (pEntry->vaEnd - pEntry->vaStart) : 0;
         region.protect = pEntry->Protection;
 
-        // Set permission flags
-        // PAGE_GUARD (0x100) is a modifier OR'd onto the base protection, so a
-        // guard page can report PAGE_READWRITE underneath it and still pass a
-        // naive readable check. Exclude guard pages explicitly.
-        bool hasGuard = (pEntry->Protection & 0x100) != 0;
+        // PAGE_GUARD is a modifier OR'd onto the base protection, so a guard
+        // page can report PAGE_READWRITE underneath it and still pass a naive
+        // readable check. Exclude guard pages explicitly.
+        const bool hasGuard = (pEntry->Protection & PROT_GUARD) != 0;
 
         region.isReadable = !hasGuard &&
-                            ((pEntry->Protection & 0x02) ||  // PAGE_READONLY
-                             (pEntry->Protection & 0x04) ||  // PAGE_READWRITE
-                             (pEntry->Protection & 0x20) ||  // PAGE_EXECUTE_READ
-                             (pEntry->Protection & 0x40));   // PAGE_EXECUTE_READWRITE
+                            ((pEntry->Protection & PROT_READONLY) ||
+                             (pEntry->Protection & PROT_READWRITE) ||
+                             (pEntry->Protection & PROT_EXECUTE_READ) ||
+                             (pEntry->Protection & PROT_EXECUTE_READWRITE));
 
-        region.isWriteable = (pEntry->Protection & 0x04) ||  // PAGE_READWRITE
-                             (pEntry->Protection & 0x40);    // PAGE_EXECUTE_READWRITE
+        region.isWriteable = (pEntry->Protection & PROT_READWRITE) ||
+                             (pEntry->Protection & PROT_EXECUTE_READWRITE);
 
-        region.isExecutable = (pEntry->Protection & 0x10) ||  // PAGE_EXECUTE
-                              (pEntry->Protection & 0x20) ||  // PAGE_EXECUTE_READ
-                              (pEntry->Protection & 0x40) ||  // PAGE_EXECUTE_READWRITE
-                              (pEntry->Protection & 0x80);    // PAGE_EXECUTE_WRITECOPY
+        region.isExecutable = (pEntry->Protection & PROT_EXECUTE) ||
+                              (pEntry->Protection & PROT_EXECUTE_READ) ||
+                              (pEntry->Protection & PROT_EXECUTE_READWRITE) ||
+                              (pEntry->Protection & PROT_EXECUTE_WRITECOPY);
 
-        // Determine region type
         if (pEntry->fImage) {
             region.type = "Image";
-            if (pEntry->uszText) {
-                region.name = pEntry->uszText;
-            }
+            if (pEntry->uszText) region.name = pEntry->uszText;
         } else if (pEntry->fFile) {
             region.type = "File";
-            if (pEntry->uszText) {
-                region.name = pEntry->uszText;
-            }
+            if (pEntry->uszText) region.name = pEntry->uszText;
         } else if (pEntry->fHeap) {
             region.type = "Heap";
             char heapName[32];
-            snprintf(heapName, sizeof(heapName), "Heap_%d", pEntry->HeapNum);
+            snprintf(heapName, sizeof(heapName), "Heap_%lu", (unsigned long)pEntry->HeapNum);
             region.name = heapName;
         } else if (pEntry->fStack) {
             region.type = "Stack";
@@ -110,94 +112,112 @@ bool GetProcessMemoryRegions(DWORD pid, std::vector<MemoryRegion>& regions) {
             region.type = "Unknown";
         }
 
-        regions.push_back(region);
+        regions.push_back(std::move(region));
     }
 
     VMMDLL_MemFree(pVadMap);
 
-    printf("[+] Found %zu memory regions\n", regions.size());
+    if (!quiet) {
+        printf("[+] Found %zu memory regions\n", regions.size());
+    }
     return true;
 }
 
-// Get only readable memory regions (for scanning)
-bool GetReadableMemoryRegions(DWORD pid, std::vector<MemoryRegion>& regions) {
+bool GetReadableMemoryRegions(DWORD pid, std::vector<MemoryRegion>& regions, bool quiet) {
     std::vector<MemoryRegion> allRegions;
 
-    if (!GetProcessMemoryRegions(pid, allRegions)) {
+    if (!GetProcessMemoryRegions(pid, allRegions, quiet)) {
         return false;
     }
 
     regions.clear();
 
-    for (const auto& region : allRegions) {
-        // Only include readable regions with reasonable size
-        if (region.isReadable && region.size > 0 && region.size < 0x7FFFFFFF) {
-            // Skip obviously bad regions
-            if (region.base == 0 || region.base == (uint64_t)-1) {
-                continue;
-            }
-            regions.push_back(region);
+    for (auto& region : allRegions) {
+        if (!region.isReadable || region.size == 0 || region.size >= 0x7FFFFFFF) {
+            continue;
         }
+        if (region.base == 0 || region.base == (uint64_t)-1) {
+            continue;
+        }
+        regions.push_back(std::move(region));
     }
 
-    printf("[+] Found %zu readable memory regions\n", regions.size());
+    if (!quiet) {
+        printf("[+] Found %zu readable memory regions\n", regions.size());
+    }
     return true;
 }
 
-// Cache of readable regions, populated by RegionCache_Refresh().
-// IsAddressReadable() uses this so a bulk validation pass (e.g. one call per
-// search result in NextScan) doesn't refetch the whole VAD map from the VMM
-// on every single address.
-static std::vector<MemoryRegion> g_regionCache;
-static bool g_regionCacheValid = false;
+// ---------------------------------------------------------------------------
+// Readable-region cache
+// ---------------------------------------------------------------------------
+// Sorted by base address so lookups can binary search. Owned by the scanning
+// thread.
+
+namespace {
+
+std::vector<MemoryRegion> g_regionCache;
+bool                      g_regionCacheValid = false;
+
+bool RegionContains(const MemoryRegion& r, uint64_t address) {
+    return address >= r.base && address < r.base + r.size;
+}
+
+} // namespace
 
 void RegionCache_Refresh(DWORD pid) {
     std::vector<MemoryRegion> regions;
-    if (GetReadableMemoryRegions(pid, regions)) {
-        g_regionCache = std::move(regions);
-        g_regionCacheValid = true;
-    } else {
+    if (!GetReadableMemoryRegions(pid, regions, /*quiet=*/true)) {
         g_regionCacheValid = false;
+        g_regionCache.clear();
+        return;
     }
+
+    std::sort(regions.begin(), regions.end(),
+              [](const MemoryRegion& a, const MemoryRegion& b) { return a.base < b.base; });
+
+    g_regionCache      = std::move(regions);
+    g_regionCacheValid = true;
 }
 
-// Check if an address is in a readable region
 bool IsAddressReadable(uint64_t address) {
-    if (g_regionCacheValid) {
-        for (const auto& region : g_regionCache) {
-            if (address >= region.base && address < region.base + region.size) {
+    if (!g_regionCacheValid) {
+        // No cache populated yet -- fall back to a fresh (much slower) fetch
+        // so this still returns the right answer if a caller forgets to
+        // refresh.
+        std::vector<MemoryRegion> regions;
+        if (!GetReadableMemoryRegions(process_id, regions, /*quiet=*/true)) {
+            return false;
+        }
+        for (const auto& region : regions) {
+            if (RegionContains(region, address)) {
                 return true;
             }
         }
         return false;
     }
 
-    // No cache populated yet — fall back to a fresh (slower) fetch so this
-    // function still works correctly even if a caller forgets to refresh.
-    std::vector<MemoryRegion> regions;
-    if (!GetReadableMemoryRegions(process_id, regions)) {
+    // First region whose base is greater than the address; the candidate is
+    // the one before it.
+    const auto it = std::upper_bound(
+        g_regionCache.begin(), g_regionCache.end(), address,
+        [](uint64_t value, const MemoryRegion& r) { return value < r.base; });
+
+    if (it == g_regionCache.begin()) {
         return false;
     }
-
-    for (const auto& region : regions) {
-        if (address >= region.base && address < region.base + region.size) {
-            return true;
-        }
-    }
-
-    return false;
+    return RegionContains(*(it - 1), address);
 }
 
-// Get region info for a specific address
 bool GetRegionInfo(uint64_t address, MemoryRegion& region) {
     std::vector<MemoryRegion> regions;
 
-    if (!GetProcessMemoryRegions(process_id, regions)) {
+    if (!GetProcessMemoryRegions(process_id, regions, /*quiet=*/true)) {
         return false;
     }
 
     for (const auto& r : regions) {
-        if (address >= r.base && address < r.base + r.size) {
+        if (RegionContains(r, address)) {
             region = r;
             return true;
         }
@@ -206,7 +226,6 @@ bool GetRegionInfo(uint64_t address, MemoryRegion& region) {
     return false;
 }
 
-// Print regions for debugging
 void PrintMemoryRegions(DWORD pid) {
     std::vector<MemoryRegion> regions;
 
@@ -215,18 +234,18 @@ void PrintMemoryRegions(DWORD pid) {
         return;
     }
 
-    printf("\n=== Memory Regions for PID %d ===\n", pid);
-    printf("%-16s %-16s %-10s %-8s %-8s %-8s %s\n",
+    printf("\n=== Memory Regions for PID %lu ===\n", (unsigned long)pid);
+    printf("%-18s %-12s %-10s %-6s %-6s %-6s %s\n",
            "Base", "Size", "Type", "Read", "Write", "Exec", "Name");
     printf("----------------------------------------------------------------\n");
 
     for (const auto& region : regions) {
-        printf("0x%012llX 0x%08X %-10s %-8s %-8s %-8s %s\n",
-               region.base,
-               (DWORD)region.size,
+        printf("0x%016llX 0x%08llX %-10s %-6s %-6s %-6s %s\n",
+               (unsigned long long)region.base,
+               (unsigned long long)region.size,
                region.type.c_str(),
-               region.isReadable ? "Yes" : "No",
-               region.isWriteable ? "Yes" : "No",
+               region.isReadable   ? "Yes" : "No",
+               region.isWriteable  ? "Yes" : "No",
                region.isExecutable ? "Yes" : "No",
                region.name.c_str());
     }

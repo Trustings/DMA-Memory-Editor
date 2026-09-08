@@ -1,31 +1,32 @@
-# Rust
-/target/
-**/*.rs.bk
-
-# C++ build OUTPUT directories
+# Build output
+/build/
 /x64/
 /x86/
 /Debug/
 /Release/
-/build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
 
-# Binary files
+# Runtime state
+imgui.ini
+dma-editor.conf
 
-# Visual Studio USER files (personal settings)
+# Visual Studio user files
 /.vs/
 *.user
 *.userosscache
 *.sln.docstates
 
-#CMake user files
-*.CMakeLists.txt.user 
-
-# C++ build intermediate files
+# C/C++ intermediates
+*.o
+*.obj
+*.a
 *.recipe
 *.vcxproj.FileListAbsolute.txt
 *.iobj
 *.ipdb
-*.obj
 *.pdb
 *.ilk
 *.tlb
