@@ -54,3 +54,8 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Local test-target build artifacts
+/tools/*.exe
+/tools/*.obj
+/tools/memtarget
