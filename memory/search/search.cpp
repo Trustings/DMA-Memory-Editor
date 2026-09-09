@@ -64,8 +64,16 @@ void MemorySearch_FirstScan(DWORD pid) {
     printf("[>] Starting full-coverage scan: %zu regions, %.2f MB total\n",
            regions.size(), totalSize / (1024.0 * 1024.0));
 
+    int result00 = start_mutex_lock();
+
     g_searchResults.clear();
     int typeSize = GetTypeSize(g_currentOptions.type);
+
+    g_searchResults.reserve(64000000);
+
+    if(result00 == 0){
+        end_mutex_lock();
+    }
 
     if (typeSize <= 0) {
         printf("[!] Invalid type size, aborting scan\n");
@@ -101,7 +109,7 @@ void MemorySearch_FirstScan(DWORD pid) {
             if (vmmdll_read(currentAddr, buffer.data(), bytesToRead)) {
                 // Scan each position
                 
-                static int result = start_mutex_lock();
+                int result01 = start_mutex_lock();
              
                 for (DWORD i = 0; i + (DWORD)typeSize <= bytesToRead; i += g_currentOptions.alignment) {
                     if (ValueMatches(&buffer[i], g_currentOptions.type, g_currentOptions)) {
@@ -117,7 +125,7 @@ void MemorySearch_FirstScan(DWORD pid) {
                     }
                 }
                
-                if (result == 0) {
+                if (result01 == 0) {
                     end_mutex_lock();
                 }
                 
@@ -140,15 +148,28 @@ void MemorySearch_FirstScan(DWORD pid) {
         }
     }
 
+    int result02 = start_mutex_lock();
+
     g_searchDepth = 1;
+
+    if(result02 == 0){
+        end_mutex_lock();
+    }
+
     state1_s.g_isFirstScan = false;
 
     // Snapshot the readable-region layout now so NextScan can validate
     // addresses against it without re-fetching the VAD map per address.
     RegionCache_Refresh(pid);
 
+    int result03 = start_mutex_lock();
+
     printf("\n[+] First scan complete! Found %zu results across %zu regions (%llu chunk reads failed)\n",
            g_searchResults.size(), regions.size(), (unsigned long long)chunksFailed);
+
+    if(result03 == 0){
+        end_mutex_lock();
+    }
 }
 
 void MemorySearch_NextScan(DWORD pid) {

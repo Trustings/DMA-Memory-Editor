@@ -93,7 +93,7 @@ void* sync_operations(void* arg){
                 MemorySearch_FirstScan(process_id);
 
                 // Reset to first page when new scan is done
-                state1_s.currentPage = 0;
+               // state1_s.currentPage = 0;
 
                 state1_s.FirstMemorySearch = false;
 

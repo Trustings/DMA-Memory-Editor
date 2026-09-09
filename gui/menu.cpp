@@ -259,7 +259,13 @@ void CopyToClipboard(const char* text) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(150);
             if (ImGui::Combo("##Type", &selectedType, types, IM_ARRAYSIZE(types))) {
+
+                int result00 = start_mutex_lock();
                 g_currentOptions.type = selectedType;
+
+                if(result00 == 0){
+                    end_mutex_lock();
+                }
             }
 
             // Alignment selection
@@ -269,7 +275,12 @@ void CopyToClipboard(const char* text) {
             ImGui::SetNextItemWidth(100);
             if (ImGui::Combo("##Alignment", &selectedAlignment, alignments, IM_ARRAYSIZE(alignments))) {
                 int alignVals[] = { 1, 2, 4, 8 };
+
+                int result01 = start_mutex_lock();
                 g_currentOptions.alignment = alignVals[selectedAlignment];
+                if(result01 == 0){
+                    end_mutex_lock();
+                }
             }
 
             // Value input based on type
@@ -280,12 +291,20 @@ void CopyToClipboard(const char* text) {
                 if (ImGui::InputText("##StringValue", stringInput, sizeof(stringInput))) {
                     // Safe string copy
                     size_t len = strlen(stringInput);
+
+                    int result02 = start_mutex_lock();
+
                     if (len >= sizeof(g_currentOptions.stringValue)) {
                         len = sizeof(g_currentOptions.stringValue) - 1;
                     }
+
                     memcpy(g_currentOptions.stringValue, stringInput, len);
                     g_currentOptions.stringValue[len] = '\0';
                     g_currentOptions.value.dwordVal = len;
+
+                    if(result02 == 0){
+                        end_mutex_lock();
+                    }
                 }
             } else {
                 ImGui::Text("Value:");
@@ -293,13 +312,20 @@ void CopyToClipboard(const char* text) {
                 ImGui::SetNextItemWidth(200);
                 if (ImGui::InputText("##Value", valueInput, sizeof(valueInput))) {
                     // Parse based on type
+
+                    int result03 = start_mutex_lock();
                     switch(selectedType) {
+
                     case 0: g_currentOptions.value.byteVal = (uint8_t)atoi(valueInput); break;
                     case 1: g_currentOptions.value.wordVal = (uint16_t)atoi(valueInput); break;
                     case 2: g_currentOptions.value.dwordVal = (uint32_t)strtoull(valueInput, NULL, 0); break;
                     case 3: g_currentOptions.value.qwordVal = strtoull(valueInput, NULL, 0); break;
                     case 4: g_currentOptions.value.floatVal = (float)atof(valueInput); break;
                     case 5: g_currentOptions.value.doubleVal = atof(valueInput); break;
+                    }
+
+                    if(result03 == 0){
+                        end_mutex_lock();
                     }
                 }
             }
@@ -315,7 +341,14 @@ void CopyToClipboard(const char* text) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(200);
             if (ImGui::Combo("##Compare", &selectedCompare, compareTypes, IM_ARRAYSIZE(compareTypes))) {
+
+                int result04 = start_mutex_lock();
                 g_currentOptions.compareType = selectedCompare;
+
+                if(result04 == 0){
+                    end_mutex_lock();
+                }
+
             }
 
             // Additional inputs for increased/decreased by
@@ -323,25 +356,48 @@ void CopyToClipboard(const char* text) {
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(100);
                 if (ImGui::InputFloat("##IncreasedBy", &increasedByVal, 0.1f, 1.0f, "%.2f")) {
+
+                    int result05 = start_mutex_lock();
                     g_currentOptions.increasedBy = increasedByVal;
+                    if(result05 == 0){
+                        end_mutex_lock();
+                    }
                 }
             } else if (selectedCompare == 6) { // Decreased by
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(100);
                 if (ImGui::InputFloat("##DecreasedBy", &decreasedByVal, 0.1f, 1.0f, "%.2f")) {
+
+                    int result06 = start_mutex_lock();
                     g_currentOptions.decreasedBy = decreasedByVal;
+
+                    if(result06 == 0){
+                        end_mutex_lock();
+                    }
                 }
             } else if (selectedCompare == 7) { // Increased by %
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(100);
                 if (ImGui::InputFloat("##IncreasedByPercent", &increasedByPercent, 0.1f, 1.0f, "%.1f%%")) {
+
+                    int result07 = start_mutex_lock();
                     g_currentOptions.increasedByPercent = increasedByPercent;
+
+                    if(result07 == 0){
+                        end_mutex_lock();
+                    }
                 }
             } else if (selectedCompare == 8) { // Decreased by %
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(100);
                 if (ImGui::InputFloat("##DecreasedByPercent", &decreasedByPercent, 0.1f, 1.0f, "%.1f%%")) {
+
+                    int result08 = start_mutex_lock();
                     g_currentOptions.decreasedByPercent = decreasedByPercent;
+
+                    if(result08 == 0){
+                        end_mutex_lock();
+                    }
                 }
             }
 
@@ -351,11 +407,16 @@ void CopyToClipboard(const char* text) {
             if (ImGui::Button("First Scan", ImVec2(120, 0))) {
                 // Update current options
 
+                int result09 = start_mutex_lock();
                 g_currentOptions.type = selectedType;
                 g_currentOptions.compareType = selectedCompare;
                 g_currentOptions.alignment = (selectedAlignment == 0) ? 1 :
                                                  (selectedAlignment == 1) ? 2 :
                                                  (selectedAlignment == 2) ? 4 : 8;
+
+                if(result09 == 0){
+                    end_mutex_lock();
+                }
 
                 state1_s.FirstMemorySearch = true;
             }
@@ -376,9 +437,15 @@ void CopyToClipboard(const char* text) {
             }
 
             // Search info
+
+            int result10 = start_mutex_lock();
             ImGui::Text("Depth: %d", g_searchDepth);
             ImGui::SameLine();
             ImGui::Text("Results: %zu", g_searchResults.size());
+
+            if(result10 == 0){
+                end_mutex_lock();
+            }
 
             ImGui::Separator();
 
@@ -392,10 +459,10 @@ void CopyToClipboard(const char* text) {
             if (ImGui::InputText("##ResultsPerPage", resultsPerPageInput, sizeof(resultsPerPageInput),
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
                 int newPerPage = atoi(resultsPerPageInput);
-                if (newPerPage > 0) {
-                    resultsPerPage = newPerPage;
-                    state1_s.currentPage = 0; // Reset to first page
-                }
+               // if (newPerPage > 0) {
+               //     resultsPerPage = newPerPage;
+               //     state1_s.currentPage = 0; // Reset to first page
+               // }
             }
 
             // ===== NEW: ADD COPY ALL BUTTON HERE =====
@@ -403,9 +470,9 @@ void CopyToClipboard(const char* text) {
             if (ImGui::Button("Copy All Page Addresses")) {
                 std::string allAddresses;
                 size_t startIdx = state1_s.currentPage * resultsPerPage;
-                size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
 
-                static int result = start_mutex_lock();
+                int result11 = start_mutex_lock();
+                size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
 
                 for (size_t i = startIdx; i < endIdx; i++) {
                     if (!showWatchedOnly || g_searchResults[i].watched) {
@@ -415,7 +482,7 @@ void CopyToClipboard(const char* text) {
                     }
                 }
 
-                if (result == 0) {
+                if (result11 == 0) {
                 end_mutex_lock();
                 }
                 
@@ -425,9 +492,15 @@ void CopyToClipboard(const char* text) {
             }
             // ===== END NEW SECTION =====
 
+
+            int result12 = start_mutex_lock();
             // Pagination controls
             if (g_searchResults.size() > 0) {
                 int totalPages = (int)((g_searchResults.size() + resultsPerPage - 1) / resultsPerPage);
+
+                if (result12 == 0){
+                    end_mutex_lock();
+                }
 
                 ImGui::Text("Page %d/%d", state1_s.currentPage + 1, totalPages);
                 ImGui::SameLine();
@@ -439,8 +512,12 @@ void CopyToClipboard(const char* text) {
                 if (ImGui::Button(">") && state1_s.currentPage < totalPages - 1) state1_s.currentPage++;
                 ImGui::SameLine();
                 if (ImGui::Button(">>")) state1_s.currentPage = totalPages - 1;
-            }
+            } else{
 
+                if (result12 == 0){
+                    end_mutex_lock();
+                }
+            }
 
             ImGui::Separator();
 
@@ -449,11 +526,19 @@ void CopyToClipboard(const char* text) {
             if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootWindow) &&
                 ImGui::IsKeyPressed(ImGuiKey_C) &&
                 (ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper)) {
+
+                int result13 = start_mutex_lock();
+
                 if (selectedResult >= 0 && selectedResult < (int)g_searchResults.size()) {
                     char addrStr[64];
                     snprintf(addrStr, sizeof(addrStr), "0x%llX", g_searchResults[selectedResult].address);
                     ImGui::SetClipboardText(addrStr);
                 }
+
+                if (result13 == 0){
+                    end_mutex_lock();
+                }
+
             }
             // ===== END KEYBOARD SHORTCUT =====
 
@@ -476,16 +561,19 @@ void CopyToClipboard(const char* text) {
                 ImGui::NextColumn();
                 ImGui::Separator();
 
+
                 // Calculate pagination range
                 if (g_searchResults.size() > 0) {
 
-                    static int result = start_mutex_lock();
+                    int result14 = start_mutex_lock();
 
                     size_t startIdx = state1_s.currentPage * resultsPerPage;
                     size_t endIdx = (std::min)(startIdx + resultsPerPage, g_searchResults.size());
 
                     // Display only current page results
                     for (size_t i = startIdx; i < endIdx; i++) {
+
+
                         if (showWatchedOnly && !g_searchResults[i].watched) continue;
 
                         ImGui::PushID((int)i);
@@ -494,16 +582,13 @@ void CopyToClipboard(const char* text) {
                         char addrStr[32];
                         snprintf(addrStr, sizeof(addrStr), "0x%llX", g_searchResults[i].address);
 
-                        if (result == 0){
-                            end_mutex_lock();
-                        }
-
                         // Address (selectable)
                         if (ImGui::Selectable(addrStr, selectedResult == (int)i, ImGuiSelectableFlags_SpanAllColumns)) {
                             selectedResult = (int)i;
                             snprintf(newValueInput, sizeof(newValueInput), "%llu",
                                      *reinterpret_cast<uint64_t*>(g_searchResults[i].currentValue.data()));
                         }
+
 
                         // Right-click context menu for copying
                         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
@@ -532,6 +617,7 @@ void CopyToClipboard(const char* text) {
                             }
                             if (ImGui::MenuItem("Copy Address and Value")) {
                                 char copyStr[256];
+
                                 if (!g_searchResults[i].currentValue.empty()) {
                                     switch(selectedType) {
                                     case 0: snprintf(copyStr, sizeof(copyStr), "Address: %s, Value: %u",
@@ -564,8 +650,6 @@ void CopyToClipboard(const char* text) {
                         ImGui::NextColumn();
 
                         // Current value
-
-                        static int result2 = start_mutex_lock();
                  
                         if (!g_searchResults[i].currentValue.empty()) {
                             switch (selectedType) {
@@ -582,13 +666,8 @@ void CopyToClipboard(const char* text) {
                             ImGui::Text("---");
                         }
 
-                        if(result2 == 0){
-                            end_mutex_lock();
-                        }
 
                         ImGui::NextColumn();
-
-                        static int result3 = start_mutex_lock();
 
                         // Previous value
                         if (!g_searchResults[i].previousValue.empty() &&
@@ -606,15 +685,12 @@ void CopyToClipboard(const char* text) {
                             ImGui::Text("---");
                         }
 
-                        if(result3 == 0){
-                            end_mutex_lock();
-                        }
-
                         ImGui::NextColumn();
 
                         // Type
                         ImGui::Text(types[selectedType]);
                         ImGui::NextColumn();
+
 
                         // Watch checkbox
                         bool watched = g_searchResults[i].watched;
@@ -625,16 +701,28 @@ void CopyToClipboard(const char* text) {
                                 MemorySearch_RemoveWatch((int)i);
                             }
                         }
+
                         ImGui::NextColumn();
 
                         ImGui::PopID();
 
                     }
 
+                    if (result14 == 0){
+                        end_mutex_lock();
+                    }
+
                     // Show range info at the bottom
                     ImGui::Separator();
+
+                    int result19 = start_mutex_lock();
                     ImGui::Text("Showing %zu-%zu of %zu results",
                                 startIdx + 1, endIdx, g_searchResults.size());
+
+                    if(result19 == 0){
+                        end_mutex_lock();
+                    }
+
                 } else {
                     ImGui::Text("No results to display");
                 }
