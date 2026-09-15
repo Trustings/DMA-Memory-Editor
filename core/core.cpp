@@ -17,7 +17,8 @@ struct state1 state1_s = {.State1End = false,
                           .g_SearchResultReset = false,
                           .FindAccessesesClicked = false,
                           .strtol_result = 0,
-                          .wp_loop_completed = false};
+                          .wp_loop_completed = false,
+                          .g_NextMemorySearch = false};
 
 #ifdef __linux__
 static int wp_helper(uint64_t addr){
@@ -97,6 +98,14 @@ void* sync_operations(void* arg){
 
                 state1_s.FirstMemorySearch = false;
 
+            }
+
+            if(state1_s.g_NextMemorySearch){
+
+                state1_s.currentPage = 0; // Reset to first page after next scan
+                MemorySearch_NextScan(process_id);
+
+                state1_s.g_NextMemorySearch = false;
             }
 
             #ifdef __linux__

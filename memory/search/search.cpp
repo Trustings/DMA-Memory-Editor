@@ -69,7 +69,7 @@ void MemorySearch_FirstScan(DWORD pid) {
     g_searchResults.clear();
     int typeSize = GetTypeSize(g_currentOptions.type);
 
-    g_searchResults.reserve(64000000);
+    g_searchResults.reserve(68000000);
 
     if(result00 == 0){
         end_mutex_lock();
@@ -106,11 +106,14 @@ void MemorySearch_FirstScan(DWORD pid) {
                 break;
             }
 
+
+            CreateScatterHandle();
+
             if (vmmdll_read(currentAddr, buffer.data(), bytesToRead)) {
                 // Scan each position
-                
+
                 int result01 = start_mutex_lock();
-             
+
                 for (DWORD i = 0; i + (DWORD)typeSize <= bytesToRead; i += g_currentOptions.alignment) {
                     if (ValueMatches(&buffer[i], g_currentOptions.type, g_currentOptions)) {
                         MemorySearchResult result;
@@ -124,11 +127,11 @@ void MemorySearch_FirstScan(DWORD pid) {
                         resultsFound++;
                     }
                 }
-               
+
                 if (result01 == 0) {
                     end_mutex_lock();
                 }
-                
+
             } else {
                 // Chunk failed to read (unmapped/guarded mid-region, transient
                 // DMA glitch, etc.) — skip it rather than aborting the whole scan.
@@ -173,12 +176,30 @@ void MemorySearch_FirstScan(DWORD pid) {
 }
 
 void MemorySearch_NextScan(DWORD pid) {
+
+    int result00 = start_mutex_lock();
     if (g_searchResults.empty()) {
         printf("[!] No results to scan\n");
+
+        if(result00 == 0){
+            end_mutex_lock();
+        }
+
         return;
+
+    } else {
+        if(result00 == 0){
+            end_mutex_lock();
+        }
     }
 
+    int result01 = start_mutex_lock();
+
     printf("[>] Starting next scan on %zu results...\n", g_searchResults.size());
+
+    if(result01 == 0){
+        end_mutex_lock();
+    }
 
     // Refresh the readable-region cache once for this whole pass, rather than
     // re-fetching the VAD map from the VMM for every single address.
@@ -190,14 +211,25 @@ void MemorySearch_NextScan(DWORD pid) {
         return;
     }
 
+    int result02 = start_mutex_lock();
     std::vector<MemorySearchResult> newResults;
     newResults.reserve(g_searchResults.size());
+    if(result02 == 0){
+        end_mutex_lock();
+    }
 
     size_t droppedRegion = 0;
     size_t failedReads = 0;
 
     for (size_t i = 0; i < g_searchResults.size(); i++) {
+
+        int result03 = start_mutex_lock();
+
         auto& result = g_searchResults[i];
+
+        if(result03 == 0){
+            end_mutex_lock();
+        }
 
         // If the address no longer falls inside a readable region (memory
         // freed/decommitted/remapped since the last scan), drop it instead of
@@ -218,21 +250,40 @@ void MemorySearch_NextScan(DWORD pid) {
             if (ValueMatches(currentValue.data(), g_currentOptions.type, g_currentOptions)) {
                 newResults.push_back(result);
             }
+
         } else {
             failedReads++;
         }
+
+        int result04 = start_mutex_lock();
 
         // Progress indicator
         if (i % 1000 == 0) {
             printf("[>] Scanning... %zu/%zu\r", i, g_searchResults.size());
         }
+
+        if(result04 == 0){
+            end_mutex_lock();
+        }
     }
 
+    int result05 = start_mutex_lock();
     g_searchResults = std::move(newResults);
     g_searchDepth++;
 
+    if(result05 == 0){
+        end_mutex_lock();
+    }
+
+
+    int result06 = start_mutex_lock();
     printf("\n[+] Next scan complete: %zu results found (depth: %d, %zu dropped: region no longer readable, %zu read failures)\n",
            g_searchResults.size(), g_searchDepth, droppedRegion, failedReads);
+
+    if(result06 == 0){
+        end_mutex_lock();
+    }
+
 }
 
 void MemorySearch_Reset() {

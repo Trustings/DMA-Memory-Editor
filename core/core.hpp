@@ -56,6 +56,8 @@ struct state1 {
 
     std::atomic<bool> wp_loop_completed;
 
+    std::atomic<bool> g_NextMemorySearch;
+
 };
 
 extern struct state0 state0_s;

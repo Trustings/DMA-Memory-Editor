@@ -423,8 +423,9 @@ void CopyToClipboard(const char* text) {
 
             ImGui::SameLine();
             if (ImGui::Button("Next Scan", ImVec2(120, 0)) && !state1_s.g_isFirstScan) {
-                MemorySearch_NextScan(process_id);
-                state1_s.currentPage = 0; // Reset to first page after next scan
+
+                state1_s.g_NextMemorySearch = true;
+
             }
 
             ImGui::SameLine();
@@ -459,10 +460,10 @@ void CopyToClipboard(const char* text) {
             if (ImGui::InputText("##ResultsPerPage", resultsPerPageInput, sizeof(resultsPerPageInput),
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
                 int newPerPage = atoi(resultsPerPageInput);
-               // if (newPerPage > 0) {
-               //     resultsPerPage = newPerPage;
-               //     state1_s.currentPage = 0; // Reset to first page
-               // }
+                if (newPerPage > 0) {
+                    resultsPerPage = newPerPage;
+                    state1_s.currentPage = 0; // Reset to first page
+                }
             }
 
             // ===== NEW: ADD COPY ALL BUTTON HERE =====
@@ -485,7 +486,7 @@ void CopyToClipboard(const char* text) {
                 if (result11 == 0) {
                 end_mutex_lock();
                 }
-                
+
                 if (!allAddresses.empty()) {
                     ImGui::SetClipboardText(allAddresses.c_str());
                 }
@@ -595,7 +596,7 @@ void CopyToClipboard(const char* text) {
                             ImGui::OpenPopup("AddressContextMenu");
                         }
 
-                        #ifdef __linux__       
+                        #ifdef __linux__
                         if (ImGui::BeginPopup("AddressContextMenu")) {
                             if (ImGui::MenuItem("Find what accesses this address")){
 
@@ -643,14 +644,14 @@ void CopyToClipboard(const char* text) {
                             }
                             ImGui::EndPopup();
                          }
-                        #endif 
+                        #endif
 
                         // ===== END MODIFIED SECTION =====
 
                         ImGui::NextColumn();
 
                         // Current value
-                 
+
                         if (!g_searchResults[i].currentValue.empty()) {
                             switch (selectedType) {
                             case 0: ImGui::Text("%u", *reinterpret_cast<uint8_t*>(g_searchResults[i].currentValue.data())); break;
@@ -661,7 +662,7 @@ void CopyToClipboard(const char* text) {
                             case 5: ImGui::Text("%.6f", *reinterpret_cast<double*>(g_searchResults[i].currentValue.data())); break;
                             default: ImGui::Text("---");
                             }
-                            
+
                         } else {
                             ImGui::Text("---");
                         }
@@ -811,7 +812,7 @@ void CopyToClipboard(const char* text) {
                         ImGui::PopID();
                     }
 
-     
+
 
             }
 
